@@ -31,7 +31,7 @@ const service = spawn(
 
 const vite = spawn(
   process.execPath,
-  [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'vite.web.config.ts'],
+  [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'vite.web.config.mts'],
   { cwd: root, stdio: 'inherit', env }
 )
 
