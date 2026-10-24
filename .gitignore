@@ -1,0 +1,32 @@
+# Godot
+.godot/
+*.translation
+export_presets.cfg
+
+# Node / web tooling
+node_modules/
+dist/
+out/
+.vite/
+*.tsbuildinfo
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local scratch data (generated audio, caches, proxies)
+cache/
+renders/
+tmp/
+*.wav
+*.mp3
+*.ogg
+*.m4a

@@ -1,0 +1,139 @@
+:root {
+  color-scheme: dark;
+  --bg: #12141a;
+  --panel: #1a1d26;
+  --border: #2a2f3c;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #5b8cff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.muted {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.app {
+  display: grid;
+  grid-template-rows: 40px 1fr 180px;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-starting {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--warn);
+}
+
+.badge-ready {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--ok);
+}
+
+.badge-failed {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--bad);
+}
+
+.badge-stopped {
+  background: rgba(139, 147, 167, 0.15);
+  color: var(--muted);
+}
+
+.detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr 340px;
+  min-height: 0;
+}
+
+.right {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  min-height: 0;
+}
+
+.pane {
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  overflow: auto;
+  min-height: 0;
+}
+
+.projects {
+  border-left: none;
+  border-top: none;
+  border-bottom: none;
+}
+
+.lines {
+  border-top: none;
+  border-bottom: none;
+}
+
+.pool {
+  border-top: none;
+  border-right: none;
+}
+
+.inspector {
+  border-right: none;
+  border-bottom: none;
+}
+
+.workspace {
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
