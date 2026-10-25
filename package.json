@@ -10,6 +10,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "gen:types": "node scripts/gen-api-types.mjs",
     "service:install": "uv sync --project service",
     "service:dev": "uv run --project service uvicorn app.main:app --app-dir service --host 127.0.0.1 --port 3900 --reload"
   },

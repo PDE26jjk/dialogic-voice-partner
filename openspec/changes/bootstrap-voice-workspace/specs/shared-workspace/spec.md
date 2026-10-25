@@ -1,9 +1,20 @@
 ## Purpose
 
 Defines the shared production surface where audio is auditioned, trimmed, cut, uploaded and
-recorded, and where selections become reusable assets.
+recorded, and where selections become reusable assets. The workspace is section-scoped: each
+section keeps its own source, markers and selection.
 
 ## ADDED Requirements
+
+### Requirement: Workspace is scoped to the current section
+
+The shared workspace SHALL edit only the current section's state, and loading audio or
+changing in/out points in one section SHALL NOT change another section's workspace.
+
+#### Scenario: Section switch keeps work separate
+
+- **WHEN** the user trims a take in section A, switches to section B, and returns to A
+- **THEN** section A's source and in/out points are restored and section B was untouched
 
 ### Requirement: Load audio for audition
 

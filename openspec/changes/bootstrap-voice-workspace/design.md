@@ -64,7 +64,8 @@ requests so large audio files stream.
 ### D3. Storage: one JSON document per entity, atomic writes, in-memory index
 
 `project.json` holds settings, provider credentials and the section list. `blocks/<id>.json`,
-`lines/<uuid>.json` and `media/` hold the rest. Writes go to a temporary file and are renamed
+`lines/<uuid>.json`, `workspaces/<section>.json` and `media/` hold the rest. Writes go to a
+temporary file and are renamed
 into place. Opening a project scans documents once and builds reverse indexes (blocks per
 line, takes referenced by clips, section membership).
 
@@ -136,13 +137,24 @@ rather than pretending they are running.
 - Alternatives: an in-memory queue (loses state on restart), a global semaphore (the user
   explicitly rejected app-level limits).
 
+### D10. Workspace state is section-scoped
+
+`workspaces/<section_id>.json` stores the current source reference, in/out points and
+selection for one section. Switching sections swaps the document; edits debounce to the
+current section only. Assets produced by a workspace live in the shared `media/assets/` pool,
+so sections reference shared media instead of copying it.
+
+- Alternatives: one global workspace (loses context when an author jumps between scenes);
+  embedding workspace state in `project.json` (rewrites the whole settings document on every
+  marker drag).
+
 ## Risks / Trade-offs
 
 - **Dialogic is 2.0 alpha and its event API may change** → isolate all Dialogic interaction
   in the Godot extension, pin the tested Dialogic version, and keep the companion dependent
-  only on the push payload and MCP tool contract.
-- **MCP endpoint availability and tool names are environment-specific** → make the endpoint
-  configurable, fail write-back with a retryable state, and never couple export to it.
+  only on the push payload and the editor endpoint contract.
+- **Editor endpoint availability and port choice are environment-specific** → make the
+  endpoint configurable, fail write-back with a retryable state, and never couple export to it.
 - **No database means no transactions** → atomic file replacement, index rebuild on reload,
   single-instance lock, and a “reload project” path after external edits.
 - **Cross-line take borrowing makes deletion protection non-local** → maintain a reverse index

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiJson, type HealthResponse } from './lib/api'
 
 type ServiceState = 'starting' | 'ready' | 'failed' | 'stopped'
 
@@ -39,8 +40,7 @@ export default function App() {
     // Browser mode: no preload bridge, the Vite proxy reaches the service directly.
     let alive = true
     const check = (): void => {
-      fetch('/api/health')
-        .then((response) => response.json())
+      apiJson<HealthResponse>('/health')
         .then(() => {
           if (alive) {
             setStatus({ state: 'ready', detail: 'Browser mode (Vite proxy)', port: 3900, pid: null })
@@ -63,9 +63,8 @@ export default function App() {
   useEffect(() => {
     if (status?.state !== 'ready') return
     let alive = true
-    fetch('/api/health')
-      .then((response) => response.json())
-      .then((body: { status: string }) => {
+    apiJson<HealthResponse>('/health')
+      .then((body) => {
         if (alive) setRoundTrip(body.status)
       })
       .catch((error: unknown) => {

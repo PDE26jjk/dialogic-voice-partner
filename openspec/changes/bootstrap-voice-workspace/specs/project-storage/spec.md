@@ -8,18 +8,34 @@ atomic writes, in-memory indexing, and orphan handling. No relational database i
 ### Requirement: Project folder contract
 
 A project SHALL be a folder containing `project.json`, a `blocks/` directory, a `lines/`
-directory, and a `media/` directory, and each document SHALL remain readable and editable
-outside the application.
+directory, a `workspaces/` directory and a `media/` directory, and each document SHALL remain
+readable and editable outside the application.
 
 #### Scenario: Project created
 
 - **WHEN** the user creates a project bound to a Godot project path
-- **THEN** the folder contains `project.json`, `blocks/`, `lines/` and `media/`, and `project.json` records the bound Godot path
+- **THEN** the folder contains `project.json`, `blocks/`, `lines/`, `workspaces/` and `media/`, and `project.json` records the bound Godot path
 
 #### Scenario: Document edited by hand
 
 - **WHEN** a user edits a block document outside the application and reopens the project
 - **THEN** the application loads the edited document without requiring a migration step
+
+### Requirement: Workspace state is stored per section
+
+Each section SHALL have its own workspace document at `workspaces/<section_id>.json`
+containing the current source reference, the in/out points and any selection, and the
+application SHALL load that document whenever the section becomes current.
+
+#### Scenario: Switching sections restores that section's workspace
+
+- **WHEN** the user switches from section A to section B
+- **THEN** the workspace shows B's saved source and in/out points, or an empty workspace when B has none
+
+#### Scenario: Edits are written to the current section
+
+- **WHEN** the user loads a take into the workspace and moves the in point
+- **THEN** `workspaces/<current_section>.json` is updated and no other workspace document changes
 
 ### Requirement: Block documents are independent files
 

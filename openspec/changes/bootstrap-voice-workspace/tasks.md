@@ -5,16 +5,17 @@
 - [x] 1.3 Add the FastAPI service with a `/health` endpoint and verify `uv run --project service uvicorn app.main:app --app-dir service --port 3900` answers `{"status":"ok"}`
 - [ ] 1.4 Implement service supervision in the Electron main process (spawn, health poll, restart, clean quit) and verify killing the service process triggers a visible failure state and a working restart
 - [x] 1.5 Add the same-origin `/api` proxy for development and packaged builds and verify a renderer `fetch('/api/health')` succeeds in both modes
-- [ ] 1.6 Define shared request/response types generated from the service OpenAPI schema and verify the typecheck fails if a field is added to the schema but not regenerated
+- [x] 1.6 Define shared request/response types generated from the service OpenAPI schema and verify the typecheck fails if a field is added to the schema but not regenerated
 
 ## 2. Project storage
 
-- [ ] 2.1 Define the `project.json` schema (bound Godot path, section list, current section, provider settings) and verify a created project folder matches the documented tree
-- [ ] 2.2 Implement atomic document writes (temp file plus rename) and verify an interrupted write leaves the previous document readable
+- [x] 2.1 Define the `project.json` schema (bound Godot path, section list, current section, provider settings) and verify a created project folder matches the documented tree
+- [x] 2.2 Implement atomic document writes (temp file plus rename) and verify an interrupted write leaves the previous document readable
 - [ ] 2.3 Implement the project index (sections, lines, blocks, takes, links, take-to-clip references) and verify a fixture project loads with expected lookup results
 - [ ] 2.4 Implement section creation, reordering, selection and the default “Inbox” behavior and verify the spec scenarios for current-section assignment pass
 - [ ] 2.5 Implement orphan marking and explicit orphan cleanup with take protection and verify a block whose line is gone survives until cleanup and a referenced take is never deleted
 - [ ] 2.6 Implement “reload project” after external edits and verify a hand-edited block document is picked up without restart
+- [x] 2.7 Implement per-section workspace documents (`workspaces/<section_id>.json`) and verify switching sections restores that section's source and in/out points
 
 ## 3. Godot bridge
 
@@ -61,13 +62,14 @@
 - [ ] 7.3 Implement “save selection as asset” and verify a new file appears under `media/assets/` and is usable by a clip
 - [ ] 7.4 Implement file upload into the project and verify the asset appears in the pool for every line
 - [ ] 7.5 Implement microphone recording with a level meter and verify the resulting asset is stored and playable
+- [ ] 7.6 Persist the workspace source, in/out points and selection to the current section and verify a section switch saves the old state and restores the new one
 
 ## 8. Export
 
 - [ ] 8.1 Implement line rendering (place clips, sum overlaps, pad silence, peak-limit) and verify the rendered duration equals the line duration
 - [ ] 8.2 Implement export format settings (container, sample rate, bit depth, channels) and verify a WAV export at 48 kHz produces a matching file
 - [ ] 8.3 Implement destination naming (`audio/voice/<section_slug>/<line_uuid>.<ext>`) with overwrite and verify a re-export leaves no duplicate file
-- [ ] 8.4 Implement the MCP write-back after a successful write and verify success marks the line exported and failure marks it pending without deleting the file
+- [ ] 8.4 Implement the editor-endpoint write-back after a successful write and verify success marks the line exported and failure marks it pending without deleting the file
 - [ ] 8.5 Implement batch export with per-line results and verify one failing line does not abort the batch
 - [ ] 8.6 Implement retry of pending write-backs only and verify a retried line updates the `.dtl` without re-rendering audio
 
