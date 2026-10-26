@@ -5,20 +5,46 @@ editor that creates or updates lines by UUID, and never writes line text back.
 
 ## ADDED Requirements
 
-### Requirement: Manual push from the Godot editor
+### Requirement: Push from the timeline context menu
 
-The Godot extension SHALL provide an action that pushes the selected voice events, either
-one or many, to the companion in a single request.
+The Godot extension SHALL add a “Push to Voice Partner” entry to the Dialogic timeline
+event context menu, and SHALL send the voice line paired with the clicked event, whether
+that event is the voice event or its following text event.
 
-#### Scenario: Push a single line
+#### Scenario: Push a voice event
 
-- **WHEN** the user selects one voice event in the editor and runs “push to Voice Partner”
-- **THEN** the companion receives one line and reports it as created or updated
+- **WHEN** the user right-clicks a voice event and chooses “Push to Voice Partner”
+- **THEN** the voice event's UUID and the following text event are sent as one line
 
-#### Scenario: Push many lines
+#### Scenario: Push a text event
 
-- **WHEN** the user selects several voice events and runs the same action
-- **THEN** the companion receives all of them in one request and reports created, updated and orphaned counts
+- **WHEN** the user right-clicks a text event and chooses “Push to Voice Partner”
+- **THEN** the preceding voice event is paired with that text and sent as one line
+
+#### Scenario: Text without a voice event
+
+- **WHEN** the user pushes a text event that has no preceding voice event
+- **THEN** the extension inserts a new voice event before it, gives it a UUID, and sends that line
+
+#### Scenario: Push a multi-selection
+
+- **WHEN** the user selects several events and chooses the menu entry on one of them
+- **THEN** every selected line is sent once, deduplicated by UUID
+
+### Requirement: Push uses the active project
+
+The companion SHALL route pushed lines to the project it currently has active, and a push
+SHALL NOT require the Godot side to know a filesystem path.
+
+#### Scenario: Active project receives the push
+
+- **WHEN** the user pushes a line while project A is active
+- **THEN** the line document is written under project A
+
+#### Scenario: No active project
+
+- **WHEN** the user pushes a line and no project is active
+- **THEN** the service answers 409 and the editor reports that a project must be created or activated
 
 ### Requirement: UUID upsert
 

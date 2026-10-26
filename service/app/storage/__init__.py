@@ -10,6 +10,7 @@ from .project import (
     load_workspace,
     save_workspace,
 )
+from .state import get_active_project, set_active_project
 
 __all__ = [
     "create_project",
@@ -21,4 +22,6 @@ __all__ = [
     "project_paths",
     "workspace_path",
     "write_json_atomic",
+    "get_active_project",
+    "set_active_project",
 ]

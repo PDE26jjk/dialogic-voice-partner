@@ -106,7 +106,10 @@ class PushLine(BaseModel):
 
 
 class PushLinesRequest(BaseModel):
-    project_root: str = Field(description="Companion project folder that receives the lines")
+    project_root: str | None = Field(
+        default=None,
+        description="Target project folder; defaults to the app's active project",
+    )
     dtl: str = Field(description="Source `.dtl` path inside the Godot project")
     lines: list[PushLine] = Field(min_length=1)
 
