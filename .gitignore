@@ -30,3 +30,6 @@ tmp/
 *.mp3
 *.ogg
 *.m4a
+
+# Local-only Godot integration (GDScript stays out of this repository)
+local/

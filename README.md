@@ -16,7 +16,7 @@ Deliberately small and readable:
 | Local service | Python 3.11+ / FastAPI + uvicorn |
 | Storage | JSON documents on disk (no database) |
 | Audio | ffmpeg via the service, WebAudio in the renderer |
-| Godot side | GDScript editor plugin, local HTTP endpoint for write-back |
+| Godot side | GDScript editor plugin, kept outside this repository (see below) |
 
 ## Requirements
 
@@ -52,6 +52,22 @@ which the dev server proxies to the service (see `electron.vite.config.ts`).
   npm run dev:web   # service + Vite only; open http://localhost:5173
   ```
 
+## Godot integration
+
+GDScript is intentionally **not** tracked in this repository. The editor plugin
+and the Dialogic voice-event patch live in `local/godot/` (git-ignored), together
+with `local/scripts/apply-dialogic-voice-patch.ps1`:
+
+```
+local/godot/addons/voice_partner/     editor dock that pushes voice lines
+local/godot/patches/event_voice.gd    Dialogic voice event with a uuid field
+local/scripts/apply-dialogic-voice-patch.ps1
+```
+
+Copy `local/godot/addons/voice_partner` into your Godot project's `addons/`
+folder, apply the patch with the script, and enable **Voice Partner** in the
+editor's plugin list. Nothing under `local/` is published with this repository.
+
 ## Layout
 
 ```
@@ -60,4 +76,5 @@ src/preload/         contextBridge surface
 src/renderer/        React UI
 service/app/         FastAPI application
 openspec/            change proposals, specs, design, tasks
+local/               git-ignored Godot addon + patch (not published)
 ```
