@@ -54,19 +54,16 @@ which the dev server proxies to the service (see `electron.vite.config.ts`).
 
 ## Godot integration
 
-GDScript is intentionally **not** tracked in this repository. The editor plugin
-and the Dialogic voice-event patch live in `local/godot/` (git-ignored), together
-with `local/scripts/apply-dialogic-voice-patch.ps1`:
+GDScript is intentionally **not** part of this repository. The editor dock and the
+Dialogic voice-event change live in the Dialogic fork (`PDE26jjk/dialogic`):
 
 ```
-local/godot/addons/voice_partner/     editor dock that pushes voice lines
-local/godot/patches/event_voice.gd    Dialogic voice event with a uuid field
-local/scripts/apply-dialogic-voice-patch.ps1
+addons/dialogic/Modules/Voice/event_voice.gd   voice events carry `uuid=...`
+addons/voice_partner/                          editor dock that pushes lines
 ```
 
-Copy `local/godot/addons/voice_partner` into your Godot project's `addons/`
-folder, apply the patch with the script, and enable **Voice Partner** in the
-editor's plugin list. Nothing under `local/` is published with this repository.
+Enable **Voice Partner** in the Godot editor's plugin list; the dock talks to the
+local service at `http://127.0.0.1:3900`.
 
 ## Layout
 
@@ -76,5 +73,4 @@ src/preload/         contextBridge surface
 src/renderer/        React UI
 service/app/         FastAPI application
 openspec/            change proposals, specs, design, tasks
-local/               git-ignored Godot addon + patch (not published)
 ```
