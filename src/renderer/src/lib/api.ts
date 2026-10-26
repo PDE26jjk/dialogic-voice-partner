@@ -35,5 +35,18 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status, detail)
   }
 
+  if (response.status === 204) {
+    // No content: deleting a document succeeds without a body.
+    return undefined as T
+  }
+
   return (await response.json()) as T
+}
+
+/** Convenience wrapper for JSON requests with a method and a body. */
+export function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return apiJson<T>(path, {
+    method,
+    body: body === undefined ? undefined : JSON.stringify(body)
+  })
 }

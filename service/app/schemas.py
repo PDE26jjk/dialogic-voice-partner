@@ -66,6 +66,10 @@ class ProjectSettings(BaseModel):
     godot_project: str = Field(description="Absolute path of the bound Godot project")
     sections: list[Section] = Field(default_factory=list)
     current_section: str | None = Field(default=None, description="Section receiving new lines")
+    line_order: list[str] = Field(
+        default_factory=list,
+        description="Line UUIDs in the order the user arranged them",
+    )
     providers: dict[str, Any] = Field(
         default_factory=dict,
         description="Per-provider settings, including character to voice mappings",
@@ -118,3 +122,136 @@ class PushLinesResult(BaseModel):
     created: int
     updated: int
     section: str
+
+
+class ActiveProject(BaseModel):
+    """The project the app is currently working in."""
+
+    root: str = Field(description="Absolute folder of the project documents")
+    project: ProjectSettings
+
+
+class CreateSectionRequest(BaseModel):
+    id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Identifier used in the workspace file name",
+    )
+    name: str = Field(min_length=1, description="Display name")
+
+
+class UpdateSectionRequest(BaseModel):
+    name: str | None = None
+    order: int | None = None
+
+
+class BlockLinks(BaseModel):
+    """Lines and sections a block is attached to; links never imply ownership."""
+
+    lines: list[str] = Field(default_factory=list, description="Line UUIDs")
+    sections: list[str] = Field(default_factory=list, description="Section ids")
+
+
+class BlockSlot(BaseModel):
+    """One provider/model slot of a block, created on first use."""
+
+    provider: str
+    model: str
+    prompt: str = Field(default="", description="Prompt sent to this model")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-native parameters for this model",
+    )
+    history: list[str] = Field(
+        default_factory=list,
+        description="Previous prompts, oldest first, so conversion stays reversible",
+    )
+    updated_at: datetime | None = None
+
+
+class Take(BaseModel):
+    """One generated audio file in a block's shared take history."""
+
+    id: str
+    slot: str = Field(description="Slot key this take was produced with")
+    provider: str
+    model: str
+    asset: str = Field(description="Path of the audio file relative to the project root")
+    duration_ms: int | None = None
+    created_at: datetime | None = None
+
+
+class BlockDocument(BaseModel):
+    """`blocks/<id>.json`: a project-level generation unit."""
+
+    version: int = 1
+    id: str
+    title: str
+    character: str = Field(default="", description="Dialogic character identifier")
+    character_name: str | None = None
+    text: str = Field(default="", description="Line text this block started from")
+    links: BlockLinks = Field(default_factory=BlockLinks)
+    slots: dict[str, BlockSlot] = Field(
+        default_factory=dict,
+        description="Slots keyed by '<provider>/<model>'",
+    )
+    active_slot: str | None = None
+    takes: list[Take] = Field(default_factory=list, description="Shared, append-only history")
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CreateBlockRequest(BaseModel):
+    line_uuid: str | None = Field(
+        default=None,
+        description="Line to copy character and text from; links the block to it",
+    )
+    title: str | None = None
+    section: str | None = Field(default=None, description="Section to link the block to")
+
+
+class UpdateBlockRequest(BaseModel):
+    title: str | None = None
+    links: BlockLinks | None = None
+    active_slot: str | None = None
+
+
+class EnsureSlotRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class UpdateSlotRequest(BaseModel):
+    prompt: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class AddTakeRequest(BaseModel):
+    slot: str = Field(min_length=1)
+    asset: str = Field(min_length=1)
+    duration_ms: int | None = None
+
+
+class ProviderModel(BaseModel):
+    id: str
+    label: str
+
+
+class ProviderInfo(BaseModel):
+    """One registered provider and the models its adapter offers."""
+
+    id: str
+    label: str
+    models: list[ProviderModel]
+
+
+class GenerateRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class LineOrderRequest(BaseModel):
+    """The full line order after a drag, top to bottom."""
+
+    uuids: list[str] = Field(default_factory=list)

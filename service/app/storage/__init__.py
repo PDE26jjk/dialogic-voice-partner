@@ -1,23 +1,67 @@
 """Project storage: JSON documents on disk, no database (see design D3)."""
 
 from .atomic import write_json_atomic
-from .lines import upsert_lines
+from .blocks import (
+    add_take,
+    convert_slot,
+    create_block,
+    default_title,
+    delete_block,
+    delete_take,
+    ensure_slot,
+    list_blocks,
+    load_block,
+    referencing_lines,
+    revert_prompt,
+    save_block,
+    slot_key,
+    update_block,
+    update_slot,
+)
+from .lines import list_lines, load_line, upsert_lines
 from .paths import project_paths, workspace_path
 from .project import (
+    activate_section,
+    active_project,
     create_project,
+    create_section,
     ensure_section,
     load_project,
     load_workspace,
+    reorder_lines,
     save_workspace,
+    update_section,
 )
 from .state import get_active_project, set_active_project
 
 __all__ = [
+    "activate_section",
+    "active_project",
+    "add_take",
+    "convert_slot",
+    "create_block",
     "create_project",
+    "create_section",
+    "default_title",
+    "delete_block",
+    "delete_take",
     "ensure_section",
+    "ensure_slot",
+    "list_blocks",
+    "list_lines",
+    "load_block",
+    "load_line",
     "load_project",
     "load_workspace",
+    "referencing_lines",
+    "reorder_lines",
+    "revert_prompt",
+    "save_block",
     "save_workspace",
+    "slot_key",
+    "update_block",
+    "update_section",
+    "update_slot",
     "upsert_lines",
     "project_paths",
     "workspace_path",

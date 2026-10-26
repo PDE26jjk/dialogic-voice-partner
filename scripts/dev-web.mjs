@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,23 +12,48 @@ delete env.ELECTRON_RUN_AS_NODE
 
 const port = Number(process.env.VOICE_PARTNER_PORT || 3900)
 
-const service = spawn(
-  'uv',
-  [
-    'run',
-    '--project',
-    join(root, 'service'),
-    'uvicorn',
-    'app.main:app',
-    '--app-dir',
-    join(root, 'service'),
-    '--host',
-    '127.0.0.1',
-    '--port',
-    String(port)
-  ],
-  { cwd: root, stdio: 'inherit', env }
-)
+function isPortOpen(portNumber) {
+  return new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port: portNumber })
+    socket.setTimeout(500)
+    socket.once('connect', () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once('error', () => resolve(false))
+    socket.once('timeout', () => {
+      socket.destroy()
+      resolve(false)
+    })
+  })
+}
+
+// Reuse a service that is already running (for example `npm run service:dev`)
+// instead of failing on a port collision.
+const reuseService = await isPortOpen(port)
+if (reuseService) {
+  console.log(`Reusing the service already listening on 127.0.0.1:${port}`)
+}
+
+const service = reuseService
+  ? null
+  : spawn(
+      'uv',
+      [
+        'run',
+        '--project',
+        join(root, 'service'),
+        'uvicorn',
+        'app.main:app',
+        '--app-dir',
+        join(root, 'service'),
+        '--host',
+        '127.0.0.1',
+        '--port',
+        String(port)
+      ],
+      { cwd: root, stdio: 'inherit', env }
+    )
 
 const vite = spawn(
   process.execPath,
@@ -36,13 +62,13 @@ const vite = spawn(
 )
 
 function shutdown(code = 0) {
-  service.kill()
+  service?.kill()
   vite.kill()
   process.exit(code)
 }
 
 process.on('SIGINT', () => shutdown(0))
 vite.on('exit', (code) => shutdown(code ?? 0))
-service.on('exit', (code) => {
+service?.on('exit', (code) => {
   if (code && code !== 0) shutdown(code)
 })

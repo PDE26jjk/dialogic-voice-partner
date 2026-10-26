@@ -82,3 +82,78 @@ def ensure_section(root: Path) -> tuple[ProjectSettings, str]:
     settings.updated_at = _now()
     write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
     return settings, settings.current_section
+
+
+def create_section(root: Path, section_id: str, name: str) -> Section:
+    validate_section_id(section_id)
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if any(section.id == section_id for section in settings.sections):
+        raise ValueError(f"Section already exists: {section_id}")
+
+    order = max((section.order for section in settings.sections), default=-1) + 1
+    section = Section(id=section_id, name=name, order=order)
+    settings.sections.append(section)
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return section
+
+
+def update_section(
+    root: Path,
+    section_id: str,
+    name: str | None = None,
+    order: int | None = None,
+) -> Section:
+    validate_section_id(section_id)
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    for section in settings.sections:
+        if section.id != section_id:
+            continue
+        if name is not None:
+            section.name = name
+        if order is not None:
+            section.order = order
+        settings.updated_at = _now()
+        write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+        return section
+    raise KeyError(f"Unknown section: {section_id}")
+
+
+def activate_section(root: Path, section_id: str) -> str:
+    validate_section_id(section_id)
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if not any(section.id == section_id for section in settings.sections):
+        raise KeyError(f"Unknown section: {section_id}")
+    settings.current_section = section_id
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return section_id
+
+
+def reorder_lines(root: Path, uuids: list[str]) -> ProjectSettings:
+    """Store the user's line order; unknown UUIDs are ignored, not remembered."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    lines_dir = project_paths(root)["lines"]
+    existing = {path.stem for path in lines_dir.glob("*.json")}
+    settings.line_order = [uuid for uuid in uuids if uuid in existing]
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def active_project() -> tuple[Path, ProjectSettings] | None:
+    """Return the active project and its settings, or None when nothing is active."""
+    from .state import get_active_project
+
+    value = get_active_project()
+    if not value:
+        return None
+    root = Path(value)
+    try:
+        return root, load_project(root)
+    except FileNotFoundError:
+        return None

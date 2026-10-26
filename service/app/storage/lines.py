@@ -62,3 +62,42 @@ def upsert_lines(
         write_json_atomic(path, document.model_dump(mode="json"))
 
     return created, updated
+
+
+def load_line(root: Path, uuid_value: str) -> LineDocument:
+    """Read one line document by its Godot UUID."""
+    validate_uuid(uuid_value)
+    path = project_paths(root.expanduser().resolve())["lines"] / f"{uuid_value}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"No line document: {path}")
+    return LineDocument.model_validate(read_json(path))
+
+
+def list_lines(
+    root: Path,
+    section: str | None = None,
+    order: list[str] | None = None,
+) -> list[LineDocument]:
+    """Return the project's line documents, optionally limited to one section.
+
+    `order` is the user's arrangement; UUIDs missing from it keep their natural
+    order after the arranged ones.
+    """
+    lines_dir = project_paths(root.expanduser().resolve())["lines"]
+    if not lines_dir.is_dir():
+        return []
+
+    documents: list[LineDocument] = []
+    for path in sorted(lines_dir.glob("*.json")):
+        try:
+            document = LineDocument.model_validate(read_json(path))
+        except (OSError, ValueError):
+            continue
+        if section is not None and document.section != section:
+            continue
+        documents.append(document)
+
+    if order:
+        rank = {uuid: index for index, uuid in enumerate(order)}
+        documents.sort(key=lambda document: (rank.get(document.uuid, len(rank)), document.uuid))
+    return documents

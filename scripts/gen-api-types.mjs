@@ -18,6 +18,22 @@ if (!response.ok) {
 const spec = await response.json()
 const schemas = spec.components?.schemas ?? {}
 
+function isNullable(schema) {
+  if (!schema) return true
+  if (schema.anyOf) return schema.anyOf.some(isNullable)
+  if (schema.oneOf) return schema.oneOf.some(isNullable)
+  if (schema.type === 'null') return true
+  if (Array.isArray(schema.type)) return schema.type.includes('null')
+  return false
+}
+
+function isOptional(key, value, required) {
+  if (required.has(key) || value.default !== undefined) return false
+  // A field that cannot be null is always serialized by the service, so responses
+  // never omit it. Only nullable fields stay optional in the generated interface.
+  return isNullable(value)
+}
+
 function refName(ref) {
   return ref.split('/').pop()
 }
@@ -41,7 +57,7 @@ function tsType(schema) {
     if (schema.properties) {
       const required = new Set(schema.required ?? [])
       const fields = Object.entries(schema.properties).map(([key, value]) => {
-        const optional = required.has(key) ? '' : '?'
+        const optional = isOptional(key, value, required) ? '?' : ''
         return `  ${key}${optional}: ${tsType(value)}`
       })
       return `{\n${fields.join('\n')}\n}`
@@ -68,7 +84,7 @@ for (const [name, schema] of Object.entries(schemas)) {
   lines.push(describe(schema) + `export interface ${name} {`)
   const required = new Set(schema.required ?? [])
   for (const [key, value] of Object.entries(schema.properties ?? {})) {
-    const optional = required.has(key) ? '' : '?'
+    const optional = isOptional(key, value, required) ? '?' : ''
     lines.push(`${describe(value, '  ')}  ${key}${optional}: ${tsType(value)}`)
   }
   lines.push('}', '')
