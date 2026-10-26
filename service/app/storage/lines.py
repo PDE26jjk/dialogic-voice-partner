@@ -73,6 +73,33 @@ def load_line(root: Path, uuid_value: str) -> LineDocument:
     return LineDocument.model_validate(read_json(path))
 
 
+def save_line(root: Path, document: LineDocument) -> LineDocument:
+    """Write one line document back, refreshing its timestamp."""
+    validate_uuid(document.uuid)
+    document.updated_at = _now()
+    path = project_paths(root.expanduser().resolve())["lines"] / f"{document.uuid}.json"
+    write_json_atomic(path, document.model_dump(mode="json"))
+    return document
+
+
+def update_line(
+    root: Path,
+    uuid_value: str,
+    text: str | None = None,
+    character: str | None = None,
+    character_name: str | None = None,
+) -> LineDocument:
+    """Edit the fields the companion owns; clips and section stay untouched."""
+    document = load_line(root, uuid_value)
+    if text is not None:
+        document.text = text
+    if character is not None:
+        document.character = character
+    if character_name is not None:
+        document.character_name = character_name
+    return save_line(root, document)
+
+
 def list_lines(
     root: Path,
     section: str | None = None,

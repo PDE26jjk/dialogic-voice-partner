@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from .generation import generate_take
@@ -8,6 +8,7 @@ from .providers.registry import provider_infos
 from .schemas import (
     ActiveProject,
     AddTakeRequest,
+    AssetInfo,
     BlockDocument,
     CreateBlockRequest,
     CreateProjectRequest,
@@ -22,7 +23,10 @@ from .schemas import (
     PushLinesRequest,
     PushLinesResult,
     Section,
+    Track,
     UpdateBlockRequest,
+    UpdateLineRequest,
+    UpdateSettingsRequest,
     UpdateSectionRequest,
     UpdateSlotRequest,
     WorkspaceState,
@@ -40,17 +44,23 @@ from .storage import (
     ensure_section,
     ensure_slot,
     get_active_project,
+    list_assets,
     list_blocks,
     list_lines,
     load_block,
+    load_line,
     load_project,
     load_workspace,
     reorder_lines,
     revert_prompt,
+    save_asset,
+    save_line,
     save_workspace,
     set_active_project,
     slot_key,
     update_block,
+    update_line,
+    update_settings,
     update_section,
     update_slot,
     upsert_lines,
@@ -160,6 +170,32 @@ def list_providers_endpoint() -> list[ProviderInfo]:
     return provider_infos()
 
 
+@app.get("/assets", response_model=list[AssetInfo])
+def list_assets_endpoint() -> list[AssetInfo]:
+    """List recorded and uploaded audio available to every line."""
+    return list_assets(_active_root())
+
+
+@app.post("/assets", response_model=AssetInfo, status_code=201)
+async def save_asset_endpoint(
+    request: Request,
+    name: str = Query(min_length=1),
+    extension: str = Query("webm", pattern=r"^[a-z0-9]{2,5}$"),
+    duration_ms: int = Query(0, ge=0),
+) -> AssetInfo:
+    """Store the raw request body as a new asset; used by the recorder and uploads."""
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty audio upload")
+    return save_asset(
+        _active_root(),
+        name,
+        body,
+        extension,
+        duration_ms or None,
+    )
+
+
 @app.get("/media/{path:path}")
 def get_media(path: str) -> FileResponse:
     """Serve generated audio; the browser needs it for playback and export preview."""
@@ -190,10 +226,14 @@ def get_block_endpoint(block_id: str) -> BlockDocument:
 
 @app.post("/blocks", response_model=BlockDocument, status_code=201)
 def create_block_endpoint(request: CreateBlockRequest) -> BlockDocument:
-    """Create a block, optionally copying character and text from a line."""
+    """Create a block, optionally merging one or several lines into it."""
     try:
         return create_block(
-            _active_root(), request.line_uuid, request.title, request.section
+            _active_root(),
+            request.line_uuid,
+            request.title,
+            request.section,
+            request.line_uuids,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -210,6 +250,7 @@ def update_block_endpoint(block_id: str, request: UpdateBlockRequest) -> BlockDo
             request.title,
             request.links,
             request.active_slot,
+            request.active_take,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -363,6 +404,51 @@ def reorder_lines_endpoint(request: LineOrderRequest) -> list[LineDocument]:
     project_root = _active_root()
     settings = reorder_lines(project_root, request.uuids)
     return list_lines(project_root, None, settings.line_order)
+
+
+@app.patch("/lines/{line_uuid}", response_model=LineDocument)
+def update_line_endpoint(line_uuid: str, request: UpdateLineRequest) -> LineDocument:
+    """Edit a line's text or character; clips are preserved."""
+    try:
+        return update_line(
+            _active_root(),
+            line_uuid,
+            request.text,
+            request.character,
+            request.character_name,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/projects/settings", response_model=ProjectSettings)
+def update_settings_endpoint(request: UpdateSettingsRequest) -> ProjectSettings:
+    """Update project-level preferences such as the recording countdown."""
+    return update_settings(_active_root(), request.recording_countdown_ms)
+
+
+@app.put("/lines/{line_uuid}/track", response_model=LineDocument)
+def put_track_endpoint(line_uuid: str, track: Track) -> LineDocument:
+    """Replace a line's whole track; the editor sends the complete clip list.
+
+    Sending everything keeps the stored track identical to what the timeline
+    shows, so a failed drag can never leave half an edit behind.
+    """
+    project_root = _active_root()
+    try:
+        document = load_line(project_root, line_uuid)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    for clip in track.clips:
+        if clip.out_ms <= clip.in_ms:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Clip out_ms must be greater than in_ms (got {clip.in_ms}..{clip.out_ms})",
+            )
+
+    document.track = track
+    return save_line(project_root, document)
 
 
 @app.post("/projects/sections", response_model=Section, status_code=201)

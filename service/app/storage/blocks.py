@@ -98,21 +98,29 @@ def create_block(
     line_uuid: str | None = None,
     title: str | None = None,
     section: str | None = None,
+    line_uuids: list[str] | None = None,
 ) -> BlockDocument:
-    """Create a block, copying character and text from a line when one is given."""
+    """Create a block, copying character and text from one or several lines."""
     block = BlockDocument(
         id=uuid.uuid4().hex[:12],
         title=title or "",
         created_at=_now(),
     )
 
-    if line_uuid:
-        line = load_line(root, line_uuid)
-        block.character = line.character
-        block.character_name = line.character_name
-        block.text = line.text
-        block.title = title or default_title(line.character_name, line.character, line.text)
-        block.links.lines = [line_uuid]
+    selected = [uuid_value for uuid_value in (line_uuids or []) if uuid_value]
+    if not selected and line_uuid:
+        selected = [line_uuid]
+
+    if selected:
+        documents = [load_line(root, value) for value in selected]
+        first = documents[0]
+        block.character = first.character
+        block.character_name = first.character_name
+        block.text = "\n".join(document.text for document in documents)
+        block.title = title or default_title(
+            first.character_name, first.character, block.text
+        )
+        block.links.lines = selected
     else:
         block.title = title or "Untitled block"
 
@@ -128,6 +136,7 @@ def update_block(
     title: str | None = None,
     links: BlockLinks | None = None,
     active_slot: str | None = None,
+    active_take: str | None = None,
 ) -> BlockDocument:
     block = load_block(root, block_id)
     if title is not None:
@@ -138,6 +147,10 @@ def update_block(
         if active_slot not in block.slots:
             raise ValueError(f"Unknown slot: {active_slot}")
         block.active_slot = active_slot
+    if active_take is not None:
+        if not any(take.id == active_take for take in block.takes):
+            raise ValueError(f"Unknown take: {active_take}")
+        block.active_take = active_take
     return save_block(root, block)
 
 

@@ -133,6 +133,16 @@ def activate_section(root: Path, section_id: str) -> str:
     return section_id
 
 
+def update_settings(root: Path, recording_countdown_ms: int | None = None) -> ProjectSettings:
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if recording_countdown_ms is not None:
+        settings.recording_countdown_ms = recording_countdown_ms
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
 def reorder_lines(root: Path, uuids: list[str]) -> ProjectSettings:
     """Store the user's line order; unknown UUIDs are ignored, not remembered."""
     root = root.expanduser().resolve()

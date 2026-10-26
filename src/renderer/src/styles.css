@@ -197,9 +197,455 @@ h2 {
 
 .workspace {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow: hidden;
   border-left: none;
   border-right: none;
   border-bottom: none;
+}
+
+.workspace-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.workspace-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+}
+
+.workspace-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-toolbar select {
+  max-width: 200px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.clip-form {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.clip-form select {
+  max-width: 220px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.timeline-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0e1015;
+}
+
+.timeline {
+  position: relative;
+}
+
+.timeline-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.clip {
+  position: absolute;
+  top: 22px;
+  height: 86px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: rgba(91, 140, 255, 0.18);
+  cursor: grab;
+  touch-action: none;
+}
+
+.clip:active {
+  cursor: grabbing;
+}
+
+.clip-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: rgba(91, 140, 255, 0.35);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.clip-edge.left {
+  left: 0;
+  border-radius: 4px 0 0 4px;
+}
+
+.clip-edge.right {
+  right: 0;
+  border-radius: 0 4px 4px 0;
+}
+
+.clip-label {
+  position: absolute;
+  top: 3px;
+  left: 10px;
+  font-size: 10px;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.clip-remove {
+  position: absolute;
+  top: 2px;
+  right: 10px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.clip-remove:hover {
+  color: var(--bad);
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--bad);
+  pointer-events: none;
+}
+
+/* --- multitrack editor ------------------------------------------------ */
+
+.editor {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.editor-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0e1015;
+}
+
+.editor-heads {
+  display: flex;
+  flex: 0 0 46px;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: #14161d;
+}
+
+.editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ruler-corner {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.head-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.head-row.selected {
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: rgba(91, 140, 255, 0.18);
+}
+
+.head-buttons {
+  display: flex;
+  gap: 1px;
+}
+
+.mini.remove {
+  color: var(--muted);
+}
+
+.mini.remove:hover {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.countdown {
+  color: var(--bad);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+  font-size: 11px;
+}
+
+.setting input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.lane-index {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mini {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mini.on {
+  border-color: var(--accent);
+  background: rgba(91, 140, 255, 0.2);
+  color: var(--text);
+}
+
+.mini.on.rec {
+  border-color: var(--bad);
+  background: rgba(248, 81, 73, 0.3);
+  color: #ffffff;
+}
+
+.ruler-strip {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: #14161d;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.ruler-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tool-group {
+  display: flex;
+  gap: 2px;
+}
+
+.tool {
+  min-width: 26px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tool.on {
+  border-color: var(--accent);
+  background: rgba(91, 140, 255, 0.16);
+  color: var(--text);
+}
+
+.tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.timecode {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #1a1d26;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.context-menu button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: rgba(91, 140, 255, 0.18);
+}
+
+.lane-clip.muted {
+  opacity: 0.45;
+}
+
+.lane-remove {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.editor-head:hover .lane-remove {
+  opacity: 1;
+}
+
+.lane-remove:hover {
+  color: var(--bad);
+}
+
+.editor-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.editor-content {
+  position: relative;
+}
+
+.editor-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.lane-clip {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(91, 140, 255, 0.16);
+  cursor: grab;
+  touch-action: none;
+}
+
+.lane-clip:active {
+  cursor: grabbing;
+}
+
+.lane-clip.selected {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px var(--accent);
+  background: rgba(91, 140, 255, 0.26);
+}
+
+.clip-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: rgba(91, 140, 255, 0.4);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.clip-grip.left {
+  left: 0;
+}
+
+.clip-grip.right {
+  right: 0;
+}
+
+.clip-name {
+  position: absolute;
+  top: 3px;
+  right: 18px;
+  left: 12px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
 }
 
 .button {
@@ -254,6 +700,131 @@ h2 {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.lines-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.lines-head h2 {
+  margin: 0;
+}
+
+.line-wrapper {
+  list-style: none;
+}
+
+.drag-handle {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: -2px;
+  cursor: grab;
+}
+
+.line-expand {
+  flex: 0 0 auto;
+  width: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.line-expand:hover {
+  color: var(--text);
+}
+
+/* --- inline line track ------------------------------------------------ */
+
+.line-track {
+  margin: 2px 0 6px 20px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.line-track-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.line-track-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #0e1015;
+}
+
+.line-track-body {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
+.line-track-content {
+  position: relative;
+}
+
+.line-ruler {
+  position: relative;
+  background: #14161d;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.line-ruler-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.line-track-body.drop-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.line-track-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.line-clip {
+  position: absolute;
+  top: 3px;
+  height: 58px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: rgba(91, 140, 255, 0.16);
+  cursor: grab;
+  touch-action: none;
+}
+
+.line-clip:active {
+  cursor: grabbing;
+}
+
+.line-clip-label {
+  position: absolute;
+  top: 2px;
+  left: 6px;
+  font-size: 10px;
+  color: var(--text);
+  pointer-events: none;
 }
 
 .line-row {

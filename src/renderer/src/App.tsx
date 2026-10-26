@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson, sendJson, type HealthResponse } from './lib/api'
 import { useResizable, usePaneOpen } from './lib/use-resizable'
+import LineTrack from './LineTrack'
+import SectionWorkbench from './SectionWorkbench'
 import type {
   ActiveProject,
   BlockDocument,
   BlockSlot,
   LineDocument,
-  ProviderInfo
+  ProjectSettings,
+  ProviderInfo,
+  WorkspaceClip
 } from './lib/api-types'
 
 type ServiceState = 'starting' | 'ready' | 'failed' | 'stopped'
@@ -42,7 +46,7 @@ export default function App() {
   const [project, setProject] = useState<ActiveProject | null>(null)
   const [lines, setLines] = useState<LineDocument[]>([])
   const [blocks, setBlocks] = useState<BlockDocument[]>([])
-  const [selectedLine, setSelectedLine] = useState<string | null>(null)
+  const [selectedLines, setSelectedLines] = useState<string[]>([])
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [newProviderId, setNewProviderId] = useState('')
@@ -52,6 +56,14 @@ export default function App() {
   const [bottomOpen, toggleBottom] = usePaneOpen('dvp.pane.workspace.open')
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [reorderMode, setReorderMode] = useState(false)
+  const [expandedLines, setExpandedLines] = useState<string[]>([])
+  const [lineDraft, setLineDraft] = useState('')
+  const [clipInfo, setClipInfo] = useState<WorkspaceClip | null>(null)
+  const [blockMenu, setBlockMenu] = useState<{ x: number; y: number; blockId: string } | null>(
+    null
+  )
+  const [countdownDraft, setCountdownDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -75,8 +87,8 @@ export default function App() {
     axis: 'y',
     invert: true,
     minimum: 120,
-    initial: 180,
-    maximum: 520
+    initial: 300,
+    maximum: 640
   })
 
   useEffect(() => {
@@ -159,7 +171,7 @@ export default function App() {
     setError(null)
     try {
       await sendJson('POST', `/projects/sections/${sectionId}/activate`)
-      setSelectedLine(null)
+      setSelectedLines([])
       setSelectedBlock(null)
       await load()
     } catch (caught) {
@@ -168,11 +180,12 @@ export default function App() {
   }
 
   const createBlock = async (): Promise<void> => {
-    if (!selectedLine) return
+    if (selectedLines.length === 0) return
     setError(null)
     try {
+      // Several selected lines become one block whose prompt joins their text.
       const block = await sendJson<BlockDocument>('POST', '/blocks', {
-        line_uuid: selectedLine
+        line_uuids: selectedLines
       })
       setSelectedBlock(block.id)
       await load()
@@ -219,8 +232,103 @@ export default function App() {
   }
 
   const currentBlock = blocks.find((block) => block.id === selectedBlock) ?? null
+  const selectedLine = selectedLines.at(-1) ?? null
   const currentLine = lines.find((line) => line.uuid === selectedLine) ?? null
   const sections = project?.project.sections ?? []
+
+  const saveLineText = async (): Promise<void> => {
+    if (!currentLine) return
+    setError(null)
+    try {
+      const saved = await sendJson<LineDocument>('PATCH', `/lines/${currentLine.uuid}`, {
+        text: lineDraft
+      })
+      setLines((current) =>
+        current.map((item) => (item.uuid === saved.uuid ? saved : item))
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const activateTake = async (takeId: string): Promise<void> => {
+    if (!currentBlock) return
+    setError(null)
+    try {
+      const updated = await sendJson<BlockDocument>('PATCH', `/blocks/${currentBlock.id}`, {
+        active_take: takeId
+      })
+      applyBlock(updated)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  /** Append a block's active take to the currently selected line. */
+  const appendBlockToLine = async (block: BlockDocument): Promise<void> => {
+    if (!currentLine) {
+      setError('Select a line first.')
+      return
+    }
+    const take =
+      block.takes.find((item) => item.id === block.active_take) ?? block.takes.at(-1)
+    if (!take) {
+      setError('That block has no take yet.')
+      return
+    }
+    const duration = Math.max(
+      0,
+      ...currentLine.track.clips.map((clip) => clip.start_ms + (clip.out_ms - clip.in_ms))
+    )
+    try {
+      const saved = await sendJson<LineDocument>('PUT', `/lines/${currentLine.uuid}/track`, {
+        clips: [
+          ...currentLine.track.clips,
+          {
+            source: { kind: 'take', block: block.id, take: take.id },
+            in_ms: 0,
+            out_ms: take.duration_ms ?? 1000,
+            start_ms: duration
+          }
+        ]
+      })
+      setLines((current) =>
+        current.map((item) => (item.uuid === saved.uuid ? saved : item))
+      )
+      setExpandedLines((current) =>
+        current.includes(saved.uuid) ? current : [...current, saved.uuid]
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  useEffect(() => {
+    setLineDraft(currentLine?.text ?? '')
+  }, [currentLine?.uuid, currentLine?.text])
+
+  useEffect(() => {
+    setCountdownDraft(String(project?.project.recording_countdown_ms ?? 2000))
+  }, [project?.project.recording_countdown_ms])
+
+  useEffect(() => {
+    const close = (): void => setBlockMenu(null)
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [])
+
+  const saveCountdown = async (): Promise<void> => {
+    const value = Math.max(0, Math.min(10000, Number(countdownDraft) || 0))
+    setError(null)
+    try {
+      const saved = await sendJson<ProjectSettings>('PATCH', '/projects/settings', {
+        recording_countdown_ms: value
+      })
+      setProject((current) => (current ? { ...current, project: saved } : current))
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
 
   return (
     <div className="app">
@@ -296,6 +404,20 @@ export default function App() {
                 </p>
               )}
 
+              <h3>Settings</h3>
+              <label className="setting">
+                <span className="muted">Record countdown (ms)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10000}
+                  step={500}
+                  value={countdownDraft}
+                  onChange={(event) => setCountdownDraft(event.target.value)}
+                  onBlur={() => void saveCountdown()}
+                />
+              </label>
+
               <button
                 className="button"
                 type="button"
@@ -312,47 +434,99 @@ export default function App() {
         ) : null}
 
         <section className="pane lines">
-          <h2>Lines ({lines.length})</h2>
+          <div className="lines-head">
+            <h2>Lines ({lines.length})</h2>
+            <button
+              type="button"
+              className={`toggle${reorderMode ? ' on' : ''}`}
+              onClick={() => setReorderMode((enabled) => !enabled)}
+              title="Show drag handles to reorder lines"
+            >
+              Reorder
+            </button>
+          </div>
           {lines.length === 0 ? (
             <p className="muted">No lines yet. Push voice lines from the Godot editor.</p>
           ) : (
             <ul className="line-list">
               {lines.map((line, index) => (
-                <li
-                  className={`line-row${line.uuid === selectedLine ? ' selected' : ''}${
-                    dragIndex === index ? ' dragging' : ''
-                  }${overIndex === index && dragIndex !== index ? ' drop-target' : ''}`}
-                  key={line.uuid}
-                  draggable
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = 'move'
-                    setDragIndex(index)
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = 'move'
-                    if (overIndex !== index) setOverIndex(index)
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    void dropLine(index)
-                  }}
-                  onDragEnd={() => {
-                    setDragIndex(null)
-                    setOverIndex(null)
-                  }}
-                  onClick={() => {
-                    setSelectedLine(line.uuid)
-                    setSelectedBlock(null)
-                  }}
-                >
-                  <span className="line-speaker">
-                    {line.character_name || line.character || 'Narrator'}
-                  </span>
-                  <span className="line-text">{line.text}</span>
-                  <span className="line-blocks">
-                    {blocks.filter((block) => block.links.lines.includes(line.uuid)).length} block(s)
-                  </span>
+                <li className="line-wrapper" key={line.uuid}>
+                  <div
+                    className={`line-row${selectedLines.includes(line.uuid) ? ' selected' : ''}${
+                      dragIndex === index ? ' dragging' : ''
+                    }${overIndex === index && dragIndex !== index ? ' drop-target' : ''}`}
+                    draggable={reorderMode}
+                    onDragStart={(event) => {
+                      if (!reorderMode) return
+                      event.dataTransfer.effectAllowed = 'move'
+                      setDragIndex(index)
+                    }}
+                    onDragOver={(event) => {
+                      if (dragIndex === null) return
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                      if (overIndex !== index) setOverIndex(index)
+                    }}
+                    onDrop={(event) => {
+                      if (dragIndex === null) return
+                      event.preventDefault()
+                      void dropLine(index)
+                    }}
+                    onDragEnd={() => {
+                      setDragIndex(null)
+                      setOverIndex(null)
+                    }}
+                    onClick={(event) => {
+                      setSelectedBlock(null)
+                      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+                        setSelectedLines((current) =>
+                          current.includes(line.uuid)
+                            ? current.filter((uuid) => uuid !== line.uuid)
+                            : [...current, line.uuid]
+                        )
+                      } else {
+                        setSelectedLines([line.uuid])
+                      }
+                    }}
+                  >
+                    {reorderMode ? <span className="drag-handle">⠿</span> : null}
+                    <button
+                      className="line-expand"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setExpandedLines((current) =>
+                          current.includes(line.uuid)
+                            ? current.filter((uuid) => uuid !== line.uuid)
+                            : [...current, line.uuid]
+                        )
+                      }}
+                    >
+                      {expandedLines.includes(line.uuid) ? '▾' : '▸'}
+                    </button>
+                    <span className="line-speaker">
+                      {line.character_name || line.character || 'Narrator'}
+                    </span>
+                    <span className="line-text">{line.text}</span>
+                    <span className="line-blocks">
+                      {line.track.clips.length} clip(s) ·{' '}
+                      {blocks.filter((block) => block.links.lines.includes(line.uuid)).length}{' '}
+                      block(s)
+                    </span>
+                  </div>
+
+                  {expandedLines.includes(line.uuid) ? (
+                    <LineTrack
+                      line={line}
+                      blocks={blocks}
+                      countdownMs={project?.project.recording_countdown_ms ?? 2000}
+                      onSaved={(saved) => {
+                        setLines((current) =>
+                          current.map((item) => (item.uuid === saved.uuid ? saved : item))
+                        )
+                      }}
+                    />
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -384,6 +558,16 @@ export default function App() {
                   <li
                     key={block.id}
                     className={`block-card${block.id === selectedBlock ? ' selected' : ''}`}
+                    draggable
+                    title="Drag onto the workbench"
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'copy'
+                      event.dataTransfer.setData('application/x-dvp-block', block.id)
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      setBlockMenu({ x: event.clientX, y: event.clientY, blockId: block.id })
+                    }}
                     onClick={() => setSelectedBlock(block.id)}
                   >
                     <span className="block-title">{block.title}</span>
@@ -457,19 +641,72 @@ export default function App() {
                 ) : (
                   <ul className="take-list">
                     {currentBlock.takes.map((take) => (
-                      <li key={take.id} className="take-row">
+                      <li
+                        key={take.id}
+                        className="take-row"
+                        draggable
+                        title="Drag onto a line timeline"
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'copy'
+                          event.dataTransfer.setData(
+                            'application/x-dvp-take',
+                            JSON.stringify({ block: currentBlock.id, take: take.id })
+                          )
+                        }}
+                      >
                         <span className="take-meta">
                           {take.provider}/{take.model} ·{' '}
                           {take.duration_ms ? `${(take.duration_ms / 1000).toFixed(2)}s` : '—'}
                         </span>
                         <audio controls src={`/api/${take.asset}`} />
+                        <button
+                          className="button small"
+                          type="button"
+                          disabled={take.id === currentBlock.active_take}
+                          onClick={() => void activateTake(take.id)}
+                        >
+                          {take.id === currentBlock.active_take ? 'Active' : 'Use'}
+                        </button>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
+            ) : clipInfo ? (
+              <div className="block-detail">
+                <p>
+                  <strong>{clipInfo.name}</strong>
+                </p>
+                <p className="muted">
+                  start {clipInfo.start_ms}ms · in {clipInfo.in_ms}ms · out {clipInfo.out_ms}ms
+                </p>
+                <p className="muted">
+                  source: {clipInfo.source.kind === 'take' ? clipInfo.source.take : clipInfo.source.asset}
+                </p>
+              </div>
+            ) : currentLine ? (
+              <div className="block-detail">
+                <p className="muted">{currentLine.dtl}</p>
+                <h3>Line text</h3>
+                <textarea
+                  rows={4}
+                  value={lineDraft}
+                  onChange={(event) => setLineDraft(event.target.value)}
+                />
+                <div className="slot-actions">
+                  <button
+                    className="button small"
+                    type="button"
+                    disabled={lineDraft === currentLine.text}
+                    onClick={() => void saveLineText()}
+                  >
+                    Save text
+                  </button>
+                </div>
+                <h3>Clips ({currentLine.track.clips.length})</h3>
+              </div>
             ) : (
-              <p className="muted">Select a block to edit its prompts.</p>
+              <p className="muted">Select a block, a line, or a clip.</p>
             )}
           </div>
         </aside>
@@ -481,10 +718,59 @@ export default function App() {
         <>
           <div className="splitter row" {...bottom.separatorProps} />
           <footer className="pane workspace" style={{ height: bottom.size }}>
-            <h2>Workspace</h2>
-            <p className="muted">Waveform, in/out points and cutting tools land here.</p>
+            {project ? (
+              <SectionWorkbench
+                section={project.project.current_section ?? 'inbox'}
+                root={project.root}
+                lines={lines}
+                blocks={blocks}
+                selectedLine={selectedLine}
+                countdownMs={project.project.recording_countdown_ms ?? 2000}
+                onLineSaved={(saved) => {
+                  setLines((current) =>
+                    current.map((item) => (item.uuid === saved.uuid ? saved : item))
+                  )
+                }}
+                onInserted={(lineUuid) =>
+                  setExpandedLines((current) =>
+                    current.includes(lineUuid) ? current : [...current, lineUuid]
+                  )
+                }
+                onClipSelected={setClipInfo}
+              />
+            ) : (
+              <p className="muted">Open a project to use the section workbench.</p>
+            )}
           </footer>
         </>
+      ) : null}
+
+      {blockMenu ? (
+        <div
+          className="context-menu"
+          style={{ left: blockMenu.x, top: blockMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              const block = blocks.find((item) => item.id === blockMenu.blockId)
+              if (block) void appendBlockToLine(block)
+              setBlockMenu(null)
+            }}
+          >
+            Append to selected line
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedBlock(blockMenu.blockId)
+              setBlockMenu(null)
+            }}
+          >
+            Edit block
+          </button>
+        </div>
       ) : null}
     </div>
   )

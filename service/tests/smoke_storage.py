@@ -12,7 +12,13 @@ from pathlib import Path
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_DIR))
 
-from app.schemas import PushLine, Selection, SourceRef, WorkspaceState  # noqa: E402
+from app.schemas import (  # noqa: E402
+    PushLine,
+    SourceRef,
+    WorkspaceClip,
+    WorkspaceState,
+    WorkspaceTrack,
+)
 from app.storage import (  # noqa: E402
     add_take,
     convert_slot,
@@ -53,10 +59,23 @@ def main() -> None:
             root,
             WorkspaceState(
                 section="act_2",
-                source=SourceRef(kind="take", block="blk_1", take="tk_1"),
-                in_ms=1000,
-                out_ms=3200,
-                selection=Selection(in_ms=1200, out_ms=2400),
+                tracks=[
+                    WorkspaceTrack(
+                        id="lane_1",
+                        name="Lane 1",
+                        clips=[
+                            WorkspaceClip(
+                                id="clip_1",
+                                name="take one",
+                                source=SourceRef(kind="take", block="blk_1", take="tk_1"),
+                                start_ms=250,
+                                in_ms=1000,
+                                out_ms=3200,
+                            )
+                        ],
+                    )
+                ],
+                selected_clip="clip_1",
             ),
         )
         assert saved.updated_at is not None
@@ -64,8 +83,9 @@ def main() -> None:
 
         again = load_workspace(root, "act_2")
         assert again is not None
-        assert again.out_ms == 3200
-        assert again.selection is not None and again.selection.in_ms == 1200
+        assert again.tracks[0].clips[0].out_ms == 3200
+        assert again.tracks[0].clips[0].start_ms == 250
+        assert again.selected_clip == "clip_1"
 
         # A second section keeps its own document.
         assert load_workspace(root, "act_3") is None

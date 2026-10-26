@@ -1,6 +1,7 @@
 """Project storage: JSON documents on disk, no database (see design D3)."""
 
 from .atomic import write_json_atomic
+from .assets import list_assets, save_asset
 from .blocks import (
     add_take,
     convert_slot,
@@ -18,7 +19,7 @@ from .blocks import (
     update_block,
     update_slot,
 )
-from .lines import list_lines, load_line, upsert_lines
+from .lines import list_lines, load_line, save_line, update_line, upsert_lines
 from .paths import project_paths, workspace_path
 from .project import (
     activate_section,
@@ -31,6 +32,7 @@ from .project import (
     reorder_lines,
     save_workspace,
     update_section,
+    update_settings,
 )
 from .state import get_active_project, set_active_project
 
@@ -47,6 +49,7 @@ __all__ = [
     "delete_take",
     "ensure_section",
     "ensure_slot",
+    "list_assets",
     "list_blocks",
     "list_lines",
     "load_block",
@@ -56,8 +59,12 @@ __all__ = [
     "referencing_lines",
     "reorder_lines",
     "revert_prompt",
+    "save_asset",
     "save_block",
+    "save_line",
     "save_workspace",
+    "update_line",
+    "update_settings",
     "slot_key",
     "update_block",
     "update_section",

@@ -47,14 +47,39 @@ class Selection(BaseModel):
     out_ms: int = Field(ge=0, description="Selection end in milliseconds")
 
 
+class WorkspaceClip(BaseModel):
+    """One placed segment on a workbench lane; trims are per clip, not per lane."""
+
+    id: str
+    name: str = Field(default="", description="Display label, usually the take or file name")
+    source: SourceRef
+    start_ms: int = Field(default=0, ge=0, description="Position on the shared timeline")
+    in_ms: int = Field(default=0, ge=0, description="Trim start inside the source")
+    out_ms: int = Field(default=0, ge=0, description="Trim end inside the source")
+
+
+class WorkspaceTrack(BaseModel):
+    """One lane of the workbench. Lanes only stack audio; they add no trim."""
+
+    id: str
+    name: str = Field(default="")
+    clips: list[WorkspaceClip] = Field(default_factory=list)
+    muted: bool = Field(default=False, description="Silenced during workbench playback")
+    solo: bool = Field(default=False, description="Only solo lanes are audible")
+    armed: bool = Field(default=False, description="Receives recordings from the R shortcut")
+
+
 class WorkspaceState(BaseModel):
-    """Per-section workspace document (`workspaces/<section_id>.json`)."""
+    """Per-section workbench (`workspaces/<section_id>.json`).
+
+    The workbench is a small multitrack editor: lanes hold clips that reference
+    takes or assets, and everything sums together. Inserting a clip into a line
+    copies the reference, never the audio.
+    """
 
     section: str = Field(description="Section this workspace belongs to")
-    source: SourceRef | None = Field(default=None, description="Loaded source, if any")
-    in_ms: int = Field(default=0, ge=0, description="Workspace in point in milliseconds")
-    out_ms: int = Field(default=0, ge=0, description="Workspace out point in milliseconds")
-    selection: Selection | None = Field(default=None, description="Active selection, if any")
+    tracks: list[WorkspaceTrack] = Field(default_factory=list)
+    selected_clip: str | None = Field(default=None, description="Clip shown as selected")
     updated_at: datetime | None = None
 
 
@@ -69,6 +94,12 @@ class ProjectSettings(BaseModel):
     line_order: list[str] = Field(
         default_factory=list,
         description="Line UUIDs in the order the user arranged them",
+    )
+    recording_countdown_ms: int = Field(
+        default=2000,
+        ge=0,
+        le=10000,
+        description="Delay before recording starts, in milliseconds",
     )
     providers: dict[str, Any] = Field(
         default_factory=dict,
@@ -197,6 +228,10 @@ class BlockDocument(BaseModel):
         description="Slots keyed by '<provider>/<model>'",
     )
     active_slot: str | None = None
+    active_take: str | None = Field(
+        default=None,
+        description="Take used when a clip is created from this block",
+    )
     takes: list[Take] = Field(default_factory=list, description="Shared, append-only history")
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -207,6 +242,10 @@ class CreateBlockRequest(BaseModel):
         default=None,
         description="Line to copy character and text from; links the block to it",
     )
+    line_uuids: list[str] = Field(
+        default_factory=list,
+        description="Several lines merged into one block; overrides line_uuid",
+    )
     title: str | None = None
     section: str | None = Field(default=None, description="Section to link the block to")
 
@@ -215,6 +254,7 @@ class UpdateBlockRequest(BaseModel):
     title: str | None = None
     links: BlockLinks | None = None
     active_slot: str | None = None
+    active_take: str | None = None
 
 
 class EnsureSlotRequest(BaseModel):
@@ -251,7 +291,29 @@ class GenerateRequest(BaseModel):
     model: str = Field(min_length=1)
 
 
+class AssetInfo(BaseModel):
+    """An uploaded or recorded audio file in the shared pool."""
+
+    id: str
+    name: str
+    path: str = Field(description="Path relative to the project root")
+    duration_ms: int | None = None
+    created_at: datetime | None = None
+
+
 class LineOrderRequest(BaseModel):
     """The full line order after a drag, top to bottom."""
 
     uuids: list[str] = Field(default_factory=list)
+
+
+class UpdateLineRequest(BaseModel):
+    """Editable line fields; the Godot timeline is still the source for events."""
+
+    text: str | None = None
+    character: str | None = None
+    character_name: str | None = None
+
+
+class UpdateSettingsRequest(BaseModel):
+    recording_countdown_ms: int | None = Field(default=None, ge=0, le=10000)

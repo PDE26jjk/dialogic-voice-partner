@@ -18,6 +18,20 @@ export interface AddTakeRequest {
   duration_ms?: number | null
 }
 
+/** An uploaded or recorded audio file in the shared pool. */
+export interface AssetInfo {
+  /** Id */
+  id: string
+  /** Name */
+  name: string
+  /** Path relative to the project root */
+  path: string
+  /** Duration Ms */
+  duration_ms?: number | null
+  /** Created At */
+  created_at?: string | null
+}
+
 /** `blocks/<id>.json`: a project-level generation unit. */
 export interface BlockDocument {
   /** Version */
@@ -37,6 +51,8 @@ export interface BlockDocument {
   slots: Record<string, BlockSlot>
   /** Active Slot */
   active_slot?: string | null
+  /** Take used when a clip is created from this block */
+  active_take?: string | null
   /** Shared, append-only history */
   takes: Array<Take>
   /** Created At */
@@ -84,6 +100,8 @@ export interface Clip {
 export interface CreateBlockRequest {
   /** Line to copy character and text from; links the block to it */
   line_uuid?: string | null
+  /** Several lines merged into one block; overrides line_uuid */
+  line_uuids: Array<string>
   /** Title */
   title?: string | null
   /** Section to link the block to */
@@ -150,9 +168,17 @@ export interface LineDocument {
   character_name?: string | null
   /** Spoken text copied from the paired text event */
   text: string
+  /** Text was edited here and must not be replaced by a Godot push */
+  text_overridden: boolean
   track: Track
   /** Updated At */
   updated_at?: string | null
+}
+
+/** The full line order after a drag, top to bottom. */
+export interface LineOrderRequest {
+  /** Uuids */
+  uuids: Array<string>
 }
 
 /** `project.json`: one project bound to one Godot project. */
@@ -167,6 +193,10 @@ export interface ProjectSettings {
   sections: Array<Section>
   /** Section receiving new lines */
   current_section?: string | null
+  /** Line UUIDs in the order the user arranged them */
+  line_order: Array<string>
+  /** Delay before recording starts, in milliseconds */
+  recording_countdown_ms: number
   /** Per-provider settings, including character to voice mappings */
   providers: Record<string, unknown>
   /** Created At */
@@ -241,14 +271,6 @@ export interface Section {
   order: number
 }
 
-/** Selection */
-export interface Selection {
-  /** Selection start in milliseconds */
-  in_ms: number
-  /** Selection end in milliseconds */
-  out_ms: number
-}
-
 /** Where a clip or workspace source takes its audio from. */
 export interface SourceRef {
   /** Where the audio comes from */
@@ -292,6 +314,18 @@ export interface UpdateBlockRequest {
   links?: BlockLinks | null
   /** Active Slot */
   active_slot?: string | null
+  /** Active Take */
+  active_take?: string | null
+}
+
+/** Editable line fields; the Godot timeline is still the source for events. */
+export interface UpdateLineRequest {
+  /** Text */
+  text?: string | null
+  /** Character */
+  character?: string | null
+  /** Character Name */
+  character_name?: string | null
 }
 
 /** UpdateSectionRequest */
@@ -300,6 +334,12 @@ export interface UpdateSectionRequest {
   name?: string | null
   /** Order */
   order?: number | null
+}
+
+/** UpdateSettingsRequest */
+export interface UpdateSettingsRequest {
+  /** Recording Countdown Ms */
+  recording_countdown_ms?: number | null
 }
 
 /** UpdateSlotRequest */
@@ -324,18 +364,49 @@ export interface ValidationError {
   ctx: Record<string, unknown>
 }
 
-/** Per-section workspace document (`workspaces/<section_id>.json`). */
+/** One placed segment on a workbench lane; trims are per clip, not per lane. */
+export interface WorkspaceClip {
+  /** Id */
+  id: string
+  /** Display label, usually the take or file name */
+  name: string
+  source: SourceRef
+  /** Position on the shared timeline */
+  start_ms: number
+  /** Trim start inside the source */
+  in_ms: number
+  /** Trim end inside the source */
+  out_ms: number
+}
+
+/** Per-section workbench (`workspaces/<section_id>.json`).
+
+The workbench is a small multitrack editor: lanes hold clips that reference
+takes or assets, and everything sums together. Inserting a clip into a line
+copies the reference, never the audio. */
 export interface WorkspaceState {
   /** Section this workspace belongs to */
   section: string
-  /** Loaded source, if any */
-  source?: SourceRef | null
-  /** Workspace in point in milliseconds */
-  in_ms: number
-  /** Workspace out point in milliseconds */
-  out_ms: number
-  /** Active selection, if any */
-  selection?: Selection | null
+  /** Tracks */
+  tracks: Array<WorkspaceTrack>
+  /** Clip shown as selected */
+  selected_clip?: string | null
   /** Updated At */
   updated_at?: string | null
+}
+
+/** One lane of the workbench. Lanes only stack audio; they add no trim. */
+export interface WorkspaceTrack {
+  /** Id */
+  id: string
+  /** Name */
+  name: string
+  /** Clips */
+  clips: Array<WorkspaceClip>
+  /** Silenced during workbench playback */
+  muted: boolean
+  /** Only solo lanes are audible */
+  solo: boolean
+  /** Receives recordings from the R shortcut */
+  armed: boolean
 }

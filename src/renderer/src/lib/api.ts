@@ -27,8 +27,22 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = response.statusText
     try {
-      const body = (await response.json()) as { detail?: string }
-      if (body.detail) detail = body.detail
+      const body = (await response.json()) as { detail?: unknown }
+      if (typeof body.detail === 'string') {
+        detail = body.detail
+      } else if (Array.isArray(body.detail)) {
+        // FastAPI validation errors: surface the first message instead of "[object Object]".
+        detail = body.detail
+          .map((item) => {
+            if (item && typeof item === 'object' && 'msg' in item) {
+              const entry = item as { msg?: string; loc?: unknown[] }
+              const where = Array.isArray(entry.loc) ? entry.loc.join('.') : ''
+              return where ? `${where}: ${entry.msg ?? ''}` : String(entry.msg ?? '')
+            }
+            return JSON.stringify(item)
+          })
+          .join('; ')
+      }
     } catch {
       // Keep the status text when the body is not JSON.
     }
