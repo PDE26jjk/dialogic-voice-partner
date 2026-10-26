@@ -3,9 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..schemas import ProjectSettings, WorkspaceState
+from ..schemas import ProjectSettings, Section, WorkspaceState
 from .atomic import read_json, write_json_atomic
-from .paths import project_paths, validate_section_id, workspace_path
+from .paths import (
+    DEFAULT_SECTION_ID,
+    DEFAULT_SECTION_NAME,
+    project_paths,
+    validate_section_id,
+    workspace_path,
+)
 
 
 def _now() -> datetime:
@@ -59,3 +65,20 @@ def save_workspace(root: Path, state: WorkspaceState) -> WorkspaceState:
     state.updated_at = _now()
     write_json_atomic(workspace_path(root, state.section), state.model_dump(mode="json"))
     return state
+
+
+def ensure_section(root: Path) -> tuple[ProjectSettings, str]:
+    """Return the current section, creating an Inbox section when the project has none."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if settings.current_section:
+        return settings, settings.current_section
+
+    if not settings.sections:
+        settings.sections.append(
+            Section(id=DEFAULT_SECTION_ID, name=DEFAULT_SECTION_NAME, order=0)
+        )
+    settings.current_section = settings.sections[0].id
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings, settings.current_section

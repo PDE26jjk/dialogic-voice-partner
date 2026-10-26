@@ -21,12 +21,25 @@ class Section(BaseModel):
 
 
 class SourceRef(BaseModel):
-    """What the shared workspace currently has loaded."""
+    """Where a clip or workspace source takes its audio from."""
 
     kind: Literal["take", "asset"] = Field(description="Where the audio comes from")
     block: str | None = Field(default=None, description="Block id for a take source")
     take: str | None = Field(default=None, description="Take id for a take source")
     asset: str | None = Field(default=None, description="Asset id for an asset source")
+
+
+class Clip(BaseModel):
+    """One placement on a line's single track, in milliseconds."""
+
+    source: SourceRef
+    in_ms: int = Field(ge=0, description="Source in point")
+    out_ms: int = Field(ge=0, description="Source out point")
+    start_ms: int = Field(ge=0, description="Position on the line timeline")
+
+
+class Track(BaseModel):
+    clips: list[Clip] = Field(default_factory=list)
 
 
 class Selection(BaseModel):
@@ -65,3 +78,40 @@ class CreateProjectRequest(BaseModel):
     root: str = Field(description="Absolute folder that will hold the project documents")
     godot_project: str = Field(description="Absolute path of the Godot project to bind")
     name: str = Field(min_length=1, description="Human-readable project name")
+
+
+class LineDocument(BaseModel):
+    """`lines/<uuid>.json`: one Dialogic voice line and its single track."""
+
+    uuid: str = Field(description="Godot-generated UUID of the voice event")
+    section: str
+    dtl: str = Field(description="Source `.dtl` path inside the Godot project")
+    character: str = Field(description="Dialogic character identifier")
+    character_name: str | None = Field(default=None, description="Character display name")
+    text: str = Field(description="Spoken text copied from the paired text event")
+    track: Track = Field(default_factory=Track)
+    updated_at: datetime | None = None
+
+
+class PushLine(BaseModel):
+    """One voice line sent by the Godot editor extension."""
+
+    uuid: str = Field(min_length=8, max_length=64, description="UUID written on the voice event")
+    character: str = Field(description="Dialogic character identifier")
+    character_name: str | None = None
+    text: str = Field(description="Spoken text of the paired text event")
+    voice_file: str | None = Field(default=None, description="Existing voice file path, if any")
+    volume: float = 0
+    bus: str = "Master"
+
+
+class PushLinesRequest(BaseModel):
+    project_root: str = Field(description="Companion project folder that receives the lines")
+    dtl: str = Field(description="Source `.dtl` path inside the Godot project")
+    lines: list[PushLine] = Field(min_length=1)
+
+
+class PushLinesResult(BaseModel):
+    created: int
+    updated: int
+    section: str

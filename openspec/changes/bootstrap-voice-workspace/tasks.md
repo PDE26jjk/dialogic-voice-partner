@@ -19,10 +19,10 @@
 
 ## 3. Godot bridge
 
-- [ ] 3.1 Add the Godot extension skeleton (EditorPlugin with a menu entry and a dock) and verify the plugin enables in the sample project without errors
-- [ ] 3.2 Extend the Dialogic voice event with a Godot-generated UUID field and verify it round-trips through save and reload of a `.dtl`
-- [ ] 3.3 Implement the manual push action for one or many selected voice events and verify the service receives the documented payload
-- [ ] 3.4 Implement the push result summary in the editor output panel and verify created/updated counts appear and a stopped service yields a retryable failure message
+- [x] 3.1 Add the Godot extension skeleton (EditorPlugin with a menu entry and a dock) and verify the plugin enables in the sample project without errors
+- [x] 3.2 Extend the Dialogic voice event with a Godot-generated UUID field and verify it round-trips through save and reload of a `.dtl`
+- [x] 3.3 Implement the manual push action for one or many selected voice events and verify the service receives the documented payload
+- [x] 3.4 Implement the push result summary in the editor output panel and verify created/updated counts appear and a stopped service yields a retryable failure message
 - [ ] 3.5 Implement the editor-side endpoint `POST /apply-export` in the extension and verify a curl call updates the matching voice event and refreshes the editor filesystem
 - [ ] 3.6 Implement the service-side HTTP client with configurable host/port and verify a failed call surfaces as a pending write-back rather than a failed export
 

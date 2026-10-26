@@ -43,6 +43,44 @@ export interface ProjectSettings {
   updated_at?: string | null
 }
 
+/** One voice line sent by the Godot editor extension. */
+export interface PushLine {
+  /** UUID written on the voice event */
+  uuid: string
+  /** Dialogic character identifier */
+  character: string
+  /** Character Name */
+  character_name?: string | null
+  /** Spoken text of the paired text event */
+  text: string
+  /** Existing voice file path, if any */
+  voice_file?: string | null
+  /** Volume */
+  volume?: number
+  /** Bus */
+  bus?: string
+}
+
+/** PushLinesRequest */
+export interface PushLinesRequest {
+  /** Companion project folder that receives the lines */
+  project_root: string
+  /** Source `.dtl` path inside the Godot project */
+  dtl: string
+  /** Lines */
+  lines: Array<PushLine>
+}
+
+/** PushLinesResult */
+export interface PushLinesResult {
+  /** Created */
+  created: number
+  /** Updated */
+  updated: number
+  /** Section */
+  section: string
+}
+
 /** A page of lines inside one project. */
 export interface Section {
   /** Stable identifier, also used as the workspace file name */
@@ -61,7 +99,7 @@ export interface Selection {
   out_ms: number
 }
 
-/** What the shared workspace currently has loaded. */
+/** Where a clip or workspace source takes its audio from. */
 export interface SourceRef {
   /** Where the audio comes from */
   kind: "take" | "asset"

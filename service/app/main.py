@@ -6,9 +6,18 @@ from .schemas import (
     CreateProjectRequest,
     HealthResponse,
     ProjectSettings,
+    PushLinesRequest,
+    PushLinesResult,
     WorkspaceState,
 )
-from .storage import create_project, load_project, load_workspace, save_workspace
+from .storage import (
+    create_project,
+    ensure_section,
+    load_project,
+    load_workspace,
+    save_workspace,
+    upsert_lines,
+)
 
 app = FastAPI(title="Dialogic Voice Partner Service", version="0.1.0")
 
@@ -58,3 +67,20 @@ def put_workspace(
         return save_workspace(Path(root), state)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/sync/lines", response_model=PushLinesResult)
+def sync_lines(request: PushLinesRequest) -> PushLinesResult:
+    """Create or update line documents pushed from the Godot editor extension."""
+    root = Path(request.project_root)
+    try:
+        _, section = ensure_section(root)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        created, updated = upsert_lines(root, request.dtl, request.lines, section)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return PushLinesResult(created=created, updated=updated, section=section)
