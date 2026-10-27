@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -83,6 +83,15 @@ class WorkspaceState(BaseModel):
     updated_at: datetime | None = None
 
 
+class ExportSettings(BaseModel):
+    """Output format for rendered lines."""
+
+    container: str = "wav"
+    sample_rate: int = 44100
+    bit_depth: int = 16
+    channels: int = 1
+
+
 class ProjectSettings(BaseModel):
     """`project.json`: one project bound to one Godot project."""
 
@@ -100,6 +109,10 @@ class ProjectSettings(BaseModel):
         ge=0,
         le=10000,
         description="Delay before recording starts, in milliseconds",
+    )
+    export: ExportSettings = Field(
+        default_factory=ExportSettings,
+        description="Output format used when rendering lines",
     )
     editor_endpoint: str = Field(
         default="http://127.0.0.1:3901",
@@ -294,6 +307,64 @@ class AddTakeRequest(BaseModel):
     duration_ms: int | None = None
 
 
+class Job(BaseModel):
+    """One persisted generation request and its lifecycle state."""
+
+    id: str
+    block: str
+    provider: str
+    model: str
+    state: Literal["queued", "running", "done", "failed"] = "queued"
+    take: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class GenerateBatchRequest(BaseModel):
+    """Generate one take per provider for the same block."""
+
+    providers: list[str] = Field(default_factory=list)
+    raw: bool = False
+
+
+class SectionOrderRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+class CredentialRequest(BaseModel):
+    """Secrets for one provider; values are write-only."""
+
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+class BatchGenerateResult(BaseModel):
+    """One provider's outcome inside a batch generation."""
+
+    provider: str
+    ok: bool
+    take: str | None = None
+    error: str | None = None
+
+
+class CleanupResult(BaseModel):
+    """Outcome of the explicit orphan cleanup."""
+
+    blocks_removed: list[str] = Field(default_factory=list)
+    takes_removed: list[str] = Field(default_factory=list)
+    files_removed: list[str] = Field(default_factory=list)
+
+
+class ReloadResult(BaseModel):
+    """Statistics reported after rebuilding the project index."""
+
+    sections: int = 0
+    lines: int = 0
+    blocks: int = 0
+    orphans: int = 0
+    take_refs: int = 0
+
+
 class ProviderParam(BaseModel):
     """One native parameter a model exposes, described for the inspector."""
 
@@ -363,6 +434,7 @@ class UpdateCharacterRequest(BaseModel):
 class GenerateRequest(BaseModel):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    raw: bool = False
 
 
 class AssetInfo(BaseModel):
@@ -391,6 +463,16 @@ class UpdateLineRequest(BaseModel):
 
 class UpdateSettingsRequest(BaseModel):
     recording_countdown_ms: int | None = Field(default=None, ge=0, le=10000)
+    export: ExportSettings | None = None
+
+
+class SelectionAssetRequest(BaseModel):
+    """Turn a slice of a line into a reusable asset in `media/assets/`."""
+
+    line_uuid: str
+    start_ms: int = Field(default=0, ge=0)
+    end_ms: int = Field(default=0, ge=0)
+    name: str | None = None
 
 
 class ExportLineRequest(BaseModel):

@@ -14,6 +14,8 @@ interface LineTrackProps {
   line: LineDocument
   blocks: BlockDocument[]
   countdownMs: number
+  height: number
+  onResize: (height: number) => void
   onSaved: (line: LineDocument) => void
 }
 
@@ -37,11 +39,22 @@ function formatTimecode(ms: number): string {
  * The single track a line owns: one local timeline starting at zero, clips that
  * may overlap, and no cross-line state.
  */
-export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTrackProps) {
+export default function LineTrack({
+  line,
+  blocks,
+  countdownMs,
+  height,
+  onResize,
+  onSaved
+}: LineTrackProps) {
   const [zoom, setZoom] = useState(64)
   const [preview, setPreview] = useState<Clip[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
+  const [level, setLevel] = useState(0)
+  const resizeRef = useRef<{ y: number; height: number } | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const meterFrame = useRef<number | null>(null)
   const [counting, setCounting] = useState(0)
   const [dropActive, setDropActive] = useState(false)
 
@@ -292,6 +305,26 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
     void save(next)
   }
 
+  /** Render the whole line and keep the result in the shared asset pool. */
+  const saveAsAsset = async (): Promise<void> => {
+    setError(null)
+    try {
+      const end = clips.reduce(
+        (total, clip) => Math.max(total, clip.start_ms + clip.out_ms - clip.in_ms),
+        0
+      )
+      if (end <= 0) return
+      await sendJson('POST', '/assets/render', {
+        line_uuid: line.uuid,
+        start_ms: 0,
+        end_ms: Math.round(end),
+        name: `Line ${line.uuid.slice(0, 6)} render`
+      })
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
   const startRecording = async (): Promise<void> => {
     if (recording || counting > 0) return
     setError(null)
@@ -313,6 +346,22 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
         stream.getTracks().forEach((track) => track.stop())
         void finishRecording(media.mimeType)
       }
+      const context = audioContext()
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 256
+      context.createMediaStreamSource(stream).connect(analyser)
+      analyserRef.current = analyser
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const tick = (): void => {
+        const node = analyserRef.current
+        if (!node) return
+        node.getByteTimeDomainData(data)
+        let peak = 0
+        for (const value of data) peak = Math.max(peak, Math.abs(value - 128) / 128)
+        setLevel(peak)
+        meterFrame.current = requestAnimationFrame(tick)
+      }
+      tick()
       media.start()
       recorder.current = media
       setRecording(true)
@@ -327,6 +376,12 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
     recorder.current?.stop()
     recorder.current = null
     setRecording(false)
+    setLevel(0)
+    analyserRef.current = null
+    if (meterFrame.current !== null) {
+      cancelAnimationFrame(meterFrame.current)
+      meterFrame.current = null
+    }
     stop()
   }
 
@@ -358,7 +413,7 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
   }
 
   return (
-    <div className="line-track">
+    <div className="line-track" style={{ height }}>
       <div className="line-track-head">
         <button
           className="button small"
@@ -409,10 +464,44 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
           >
             {recording ? 'Stop recording' : 'Record'}
           </button>
+          <button
+            className="button small"
+            type="button"
+            disabled={clips.length === 0}
+            onClick={() => void saveAsAsset()}
+          >
+            Save as asset
+          </button>
+          {recording ? (
+            <span className="level-meter" title="Input level">
+              <span style={{ width: `${Math.round(level * 100)}%` }} />
+            </span>
+          ) : null}
         </div>
       </div>
 
       {error ? <p className="error">{error}</p> : null}
+
+      <div
+        className="line-resize"
+        title="Drag to resize"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          resizeRef.current = { y: event.clientY, height }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          const start = resizeRef.current
+          if (!start) return
+          onResize(Math.max(90, Math.min(420, start.height + (event.clientY - start.y))))
+        }}
+        onPointerUp={(event) => {
+          resizeRef.current = null
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
+        }}
+      />
 
       <div
         ref={scrollRef}
@@ -470,6 +559,11 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
               if (!raw) return
               try {
                 const payload = JSON.parse(raw) as { block: string; take: string }
+                const block = blocks.find((item) => item.id === payload.block)
+                if (!block || block.takes.length === 0) {
+                  setError('That block has no takes yet; generate one first.')
+                  return
+                }
                 void appendTake(payload.block, payload.take)
               } catch {
                 setError('Could not read the dropped take.')

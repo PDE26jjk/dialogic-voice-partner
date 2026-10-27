@@ -8,6 +8,17 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class Intent:
+    """Provider-neutral description of one line to synthesize."""
+
+    text: str
+    character: str | None = None
+    character_name: str | None = None
+    language: str | None = None
+    style: str | None = None
+
+
+@dataclass(frozen=True)
 class ModelParam:
     """One native parameter a model exposes, described for the inspector."""
 
@@ -29,11 +40,7 @@ class ModelInfo:
     params: list[ModelParam] = field(default_factory=list)
 
     def defaults(self) -> dict:
-        return {
-            param.id: param.default
-            for param in self.params
-            if param.default is not None
-        }
+        return {param.id: param.default for param in self.params if param.default is not None}
 
 
 @dataclass(frozen=True)
@@ -54,12 +61,23 @@ class SynthesisResult:
 
 
 class Provider(ABC):
-    """One remote service. Implement `synthesize` and declare its models."""
+    """One remote service. Implement `compile` and `synthesize`."""
 
     id: str
     label: str
     models: list[ModelInfo]
     voices: list[VoiceInfo] = []
+
+    def compile(
+        self,
+        intent: Intent,
+        model: str,
+        params: dict,
+        voice: str | None = None,
+        raw: bool = False,
+    ) -> dict:
+        """Translate the neutral intent into this provider's request body."""
+        return {"text": intent.text, "voice": voice, **params}
 
     @abstractmethod
     def synthesize(

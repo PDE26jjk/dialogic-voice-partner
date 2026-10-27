@@ -91,6 +91,24 @@ async function startService(): Promise<void> {
   }
 }
 
+async function restartService(): Promise<void> {
+  shutdownRequested = true
+  if (service && !service.killed && process.platform === 'win32' && service.pid) {
+    await new Promise<void>((resolve) => {
+      const killer = spawn('taskkill', ['/pid', String(service?.pid), '/T', '/F'], {
+        windowsHide: true
+      })
+      killer.on('exit', () => resolve())
+      killer.on('error', () => resolve())
+    })
+  } else if (service && !service.killed) {
+    service.kill('SIGTERM')
+  }
+  service = null
+  shutdownRequested = false
+  await startService()
+}
+
 function stopService(): void {
   shutdownRequested = true
   if (!service || service.killed) return
@@ -154,6 +172,7 @@ ipcMain.handle('window:toggle-maximize', (event) => {
 })
 ipcMain.handle('window:close', (event) => windowOf(event)?.close())
 ipcMain.handle('window:is-maximized', (event) => windowOf(event)?.isMaximized() ?? false)
+ipcMain.handle('service:restart', () => restartService())
 
 app.whenReady().then(() => {
   createWindow()

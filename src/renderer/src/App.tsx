@@ -14,6 +14,7 @@ import type {
   ProviderInfo,
   ProviderParam,
   ProviderVoice,
+  Section,
   WorkspaceClip
 } from './lib/api-types'
 
@@ -60,13 +61,35 @@ export default function App() {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const [reorderMode, setReorderMode] = useState(false)
-  const [expandedLines, setExpandedLines] = useState<string[]>([])
+  const [expandedLines, setExpandedLines] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('dvp.expandedLines')
+      return stored ? (JSON.parse(stored) as string[]) : []
+    } catch {
+      return []
+    }
+  })
   const [lineDraft, setLineDraft] = useState('')
+  const [lineHeights, setLineHeights] = useState<Record<string, number>>(() => {
+    try {
+      const stored = localStorage.getItem('dvp.lineHeights')
+      return stored ? (JSON.parse(stored) as Record<string, number>) : {}
+    } catch {
+      return {}
+    }
+  })
   const [clipInfo, setClipInfo] = useState<WorkspaceClip | null>(null)
   const [blockMenu, setBlockMenu] = useState<{ x: number; y: number; blockId: string } | null>(
     null
   )
   const [countdownDraft, setCountdownDraft] = useState('')
+  const [exportRate, setExportRate] = useState('')
+  const [exportDepth, setExportDepth] = useState('')
+  const [exportChannels, setExportChannels] = useState('')
+  const exportFormat = project?.project.export
+  const exportRateValue = exportFormat?.sample_rate ?? 44100
+  const exportDepthValue = exportFormat?.bit_depth ?? 16
+  const exportChannelsValue = exportFormat?.channels ?? 1
   const [newCharacterId, setNewCharacterId] = useState('')
   const [newCharacterName, setNewCharacterName] = useState('')
   const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null)
@@ -179,6 +202,22 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    try {
+      localStorage.setItem('dvp.lineHeights', JSON.stringify(lineHeights))
+    } catch {
+      // Non-critical.
+    }
+  }, [lineHeights])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dvp.expandedLines', JSON.stringify(expandedLines))
+    } catch {
+      // Storage can be unavailable; expansion is a convenience, not state.
+    }
+  }, [expandedLines])
+
+  useEffect(() => {
     void load()
   }, [load])
 
@@ -269,6 +308,34 @@ export default function App() {
     } catch (caught) {
       setError(toMessage(caught))
     }
+  }
+
+  const moveSection = async (sectionId: string, delta: number): Promise<void> => {
+    const ordered = [...sections].sort((a, b) => a.order - b.order)
+    const index = ordered.findIndex((section) => section.id === sectionId)
+    const target = index + delta
+    if (index < 0 || target < 0 || target >= ordered.length) return
+    const next = [...ordered]
+    const [moved] = next.splice(index, 1)
+    next.splice(target, 0, moved)
+    setError(null)
+    try {
+      const saved = await sendJson<Section[]>(
+        'PUT',
+        '/projects/sections/order',
+        { ids: next.map((section) => section.id) }
+      )
+      setProject((current) =>
+        current ? { ...current, project: { ...current.project, sections: saved } } : current
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const restartService = async (): Promise<void> => {
+    await window.voicepartner?.restartService()
+    await load()
   }
 
   const switchSection = async (sectionId: string): Promise<void> => {
@@ -521,6 +588,62 @@ export default function App() {
     return () => window.removeEventListener('pointerdown', close)
   }, [])
 
+  const saveExport = async (patch: {
+    sample_rate?: number
+    bit_depth?: number
+    channels?: number
+  }): Promise<void> => {
+    setError(null)
+    try {
+      const saved = await sendJson<ProjectSettings>('PATCH', '/projects/settings', {
+        export: { container: 'wav', sample_rate: Number(exportRate), bit_depth: Number(exportDepth), channels: Number(exportChannels), ...patch }
+      })
+      setProject((current) => (current ? { ...current, project: saved } : current))
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const uploadAsset = async (file: File): Promise<void> => {
+    setError(null)
+    try {
+      const query = new URLSearchParams({ name: file.name })
+      const response = await fetch(`/api/assets/upload?${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: await file.arrayBuffer()
+      })
+      if (!response.ok) throw new Error(`Upload failed: ${response.status}`)
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const retryPending = async (): Promise<void> => {
+    setError(null)
+    try {
+      const pending = lines.filter((line) => line.export_status === 'pending_writeback')
+      for (const line of pending) {
+        await sendJson('POST', `/lines/${encodeURIComponent(line.uuid)}/writeback`)
+      }
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const duplicateBlock = async (id: string): Promise<void> => {
+    setError(null)
+    try {
+      const copy = await sendJson<BlockDocument>('POST', `/blocks/${id}/duplicate`)
+      setBlocks((current) => [...current, copy])
+      setSelectedBlock(copy.id)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
   const saveCountdown = async (): Promise<void> => {
     const value = Math.max(0, Math.min(10000, Number(countdownDraft) || 0))
     setError(null)
@@ -615,16 +738,34 @@ export default function App() {
                         .sort((a, b) => a.order - b.order)
                         .map((section) => (
                           <li key={section.id}>
-                            <button
-                              type="button"
-                              className={`section-row${
-                                section.id === project.project.current_section ? ' active' : ''
-                              }`}
-                              onClick={() => void switchSection(section.id)}
-                            >
-                              {section.name}
-                              <span className="muted"> · {section.id}</span>
-                            </button>
+                            <div className="section-line">
+                              <button
+                                type="button"
+                                className={`section-row${
+                                  section.id === project.project.current_section ? ' active' : ''
+                                }`}
+                                onClick={() => void switchSection(section.id)}
+                              >
+                                {section.name}
+                                <span className="muted"> · {section.id}</span>
+                              </button>
+                              <button
+                                className="icon-button"
+                                type="button"
+                                title="Move up"
+                                onClick={() => void moveSection(section.id, -1)}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                className="icon-button"
+                                type="button"
+                                title="Move down"
+                                onClick={() => void moveSection(section.id, 1)}
+                              >
+                                ↓
+                              </button>
+                            </div>
                           </li>
                         ))}
                     </ul>
@@ -649,6 +790,65 @@ export default function App() {
                   onBlur={() => void saveCountdown()}
                 />
               </label>
+
+              <label className="setting">
+                <span className="muted">Export sample rate</span>
+                <select value={exportRate || String(exportRateValue)} onChange={(event) => {
+                    setExportRate(event.target.value)
+                    void saveExport({ sample_rate: Number(event.target.value) })
+                  }}>
+                  <option value="22050">22050</option>
+                  <option value="44100">44100</option>
+                  <option value="48000">48000</option>
+                </select>
+              </label>
+              <label className="setting">
+                <span className="muted">Export bit depth</span>
+                <select value={exportDepth || String(exportDepthValue)} onChange={(event) => {
+                    setExportDepth(event.target.value)
+                    void saveExport({ bit_depth: Number(event.target.value) })
+                  }}>
+                  <option value="8">8-bit</option>
+                  <option value="16">16-bit</option>
+                  <option value="24">24-bit</option>
+                </select>
+              </label>
+              <label className="setting">
+                <span className="muted">Export channels</span>
+                <select value={exportChannels || String(exportChannelsValue)} onChange={(event) => {
+                    setExportChannels(event.target.value)
+                    void saveExport({ channels: Number(event.target.value) })
+                  }}>
+                  <option value="1">Mono</option>
+                  <option value="2">Stereo</option>
+                </select>
+              </label>
+
+              <label className="setting">
+                <span className="muted">Upload asset</span>
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) void uploadAsset(file)
+                    event.target.value = ''
+                  }}
+                />
+              </label>
+
+              <button className="button" type="button" onClick={() => void retryPending()}>
+                Retry pending writes
+              </button>
+
+              <button
+                className="button"
+                type="button"
+                onClick={() => void restartService()}
+                disabled={!bridge}
+              >
+                Restart service
+              </button>
 
               <button
                 className="button"
@@ -918,6 +1118,10 @@ export default function App() {
                       line={line}
                       blocks={blocks}
                       countdownMs={project?.project.recording_countdown_ms ?? 2000}
+                      height={lineHeights[line.uuid] ?? 150}
+                      onResize={(next) =>
+                        setLineHeights((current) => ({ ...current, [line.uuid]: next }))
+                      }
                       onSaved={(saved) => {
                         setLines((current) =>
                           current.map((item) => (item.uuid === saved.uuid ? saved : item))
@@ -1078,6 +1282,15 @@ export default function App() {
                       </select>
                     </label>
                     <p className="muted">{currentBlock.text}</p>
+                    <div className="slot-actions">
+                      <button
+                        className="button small"
+                        type="button"
+                        onClick={() => void duplicateBlock(currentBlock.id)}
+                      >
+                        Duplicate block
+                      </button>
+                    </div>
 
                     <h3>Model</h3>
                     <select

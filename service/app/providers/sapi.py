@@ -12,7 +12,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from . import ModelInfo, ModelParam, Provider, SynthesisResult, VoiceInfo
+from . import Intent, ModelInfo, ModelParam, Provider, SynthesisResult, VoiceInfo
 
 POWERSHELL = "powershell.exe"
 TIMEOUT_SECONDS = 120
@@ -97,6 +97,17 @@ class SapiProvider(Provider):
             label = f"{voice_id} ({culture})" if culture else voice_id
             voices.append(VoiceInfo(id=voice_id.strip(), label=label))
         return voices
+
+    def compile(
+        self,
+        intent: Intent,
+        model: str,
+        params: dict,
+        voice: str | None = None,
+        raw: bool = False,
+    ) -> dict:
+        # System.Speech takes the text, the voice name and a rate offset.
+        return {"text": intent.text, "voice": voice, **params}
 
     def synthesize(
         self,

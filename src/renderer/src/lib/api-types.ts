@@ -32,6 +32,18 @@ export interface AssetInfo {
   created_at?: string | null
 }
 
+/** One provider's outcome inside a batch generation. */
+export interface BatchGenerateResult {
+  /** Provider */
+  provider: string
+  /** Ok */
+  ok: boolean
+  /** Take */
+  take?: string | null
+  /** Error */
+  error?: string | null
+}
+
 /** `blocks/<id>.json`: a project-level generation unit. */
 export interface BlockDocument {
   /** Version */
@@ -103,6 +115,16 @@ export interface CharacterInfo {
   voice_label?: string | null
 }
 
+/** Outcome of the explicit orphan cleanup. */
+export interface CleanupResult {
+  /** Blocks Removed */
+  blocks_removed: Array<string>
+  /** Takes Removed */
+  takes_removed: Array<string>
+  /** Files Removed */
+  files_removed: Array<string>
+}
+
 /** One placement on a line's single track, in milliseconds. */
 export interface Clip {
   source: SourceRef
@@ -152,6 +174,12 @@ export interface CreateSectionRequest {
   name: string
 }
 
+/** Secrets for one provider; values are write-only. */
+export interface CredentialRequest {
+  /** Values */
+  values: Record<string, string>
+}
+
 /** EnsureSlotRequest */
 export interface EnsureSlotRequest {
   /** Provider */
@@ -186,12 +214,34 @@ export interface ExportResult {
   writeback_error?: string | null
 }
 
+/** Output format for rendered lines. */
+export interface ExportSettings {
+  /** Container */
+  container: string
+  /** Sample Rate */
+  sample_rate: number
+  /** Bit Depth */
+  bit_depth: number
+  /** Channels */
+  channels: number
+}
+
+/** Generate one take per provider for the same block. */
+export interface GenerateBatchRequest {
+  /** Providers */
+  providers: Array<string>
+  /** Raw */
+  raw: boolean
+}
+
 /** GenerateRequest */
 export interface GenerateRequest {
   /** Provider */
   provider: string
   /** Model */
   model: string
+  /** Raw */
+  raw: boolean
 }
 
 /** HTTPValidationError */
@@ -204,6 +254,28 @@ export interface HTTPValidationError {
 export interface HealthResponse {
   /** Always 'ok' while the service is accepting requests */
   status: string
+}
+
+/** One persisted generation request and its lifecycle state. */
+export interface Job {
+  /** Id */
+  id: string
+  /** Block */
+  block: string
+  /** Provider */
+  provider: string
+  /** Model */
+  model: string
+  /** State */
+  state: "queued" | "running" | "done" | "failed"
+  /** Take */
+  take?: string | null
+  /** Error */
+  error?: string | null
+  /** Created At */
+  created_at: string
+  /** Updated At */
+  updated_at: string
 }
 
 /** `lines/<uuid>.json`: one Dialogic voice line and its single track. */
@@ -253,6 +325,8 @@ export interface ProjectSettings {
   line_order: Array<string>
   /** Delay before recording starts, in milliseconds */
   recording_countdown_ms: number
+  /** Output format used when rendering lines */
+  export: ExportSettings
   /** Local HTTP endpoint exposed by the Godot editor plugin */
   editor_endpoint: string
   /** Per-provider settings, including character to voice mappings */
@@ -351,6 +425,20 @@ export interface PushLinesResult {
   section: string
 }
 
+/** Statistics reported after rebuilding the project index. */
+export interface ReloadResult {
+  /** Sections */
+  sections: number
+  /** Lines */
+  lines: number
+  /** Blocks */
+  blocks: number
+  /** Orphans */
+  orphans: number
+  /** Take Refs */
+  take_refs: number
+}
+
 /** A page of lines inside one project. */
 export interface Section {
   /** Stable identifier, also used as the workspace file name */
@@ -359,6 +447,24 @@ export interface Section {
   name: string
   /** Ascending sort position */
   order: number
+}
+
+/** SectionOrderRequest */
+export interface SectionOrderRequest {
+  /** Ids */
+  ids: Array<string>
+}
+
+/** Turn a slice of a line into a reusable asset in `media/assets/`. */
+export interface SelectionAssetRequest {
+  /** Line Uuid */
+  line_uuid: string
+  /** Start Ms */
+  start_ms: number
+  /** End Ms */
+  end_ms: number
+  /** Name */
+  name?: string | null
 }
 
 /** SetCharacterVoiceRequest */
@@ -450,6 +556,7 @@ export interface UpdateSectionRequest {
 export interface UpdateSettingsRequest {
   /** Recording Countdown Ms */
   recording_countdown_ms?: number | null
+  export?: ExportSettings | null
 }
 
 /** UpdateSlotRequest */

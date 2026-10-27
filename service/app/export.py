@@ -1,8 +1,8 @@
 """Line rendering and export.
 
 A line is mixed from its clips: every clip is read as mono at the output rate,
-placed at its start position and summed. The result is peak-limited and written
-as a 16-bit PCM WAV next to the Godot project, so the editor can point a voice
+placed at its start position and summed. The sum is clamped (never limited) and
+written as a PCM WAV next to the Godot project, so the editor can point a voice
 event at it.
 """
 
@@ -16,11 +16,10 @@ from array import array
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .schemas import BlockDocument, LineDocument, ProjectSettings, SourceRef
+from .schemas import BlockDocument, ExportSettings, LineDocument, ProjectSettings, SourceRef
 from .storage import load_block, save_line
 
 OUTPUT_RATE = 44100
-OUTPUT_CHANNELS = 1
 INT16_MAX = 32767
 
 
@@ -97,20 +96,17 @@ def _resolve_source(root: Path, source: SourceRef) -> Path | None:
     return root / take.asset if take else None
 
 
-def render_line(root: Path, line: LineDocument) -> tuple[bytes, int]:
-    """Mix a line into WAV bytes; returns the payload and its duration in ms."""
+def _render_samples(root: Path, line: LineDocument, rate: int) -> tuple[array, int]:
+    """Mix a line's clips into 16-bit mono samples at `rate`."""
     clips = line.track.clips
     duration_ms = max(
         0,
-        *[
-            clip.start_ms + max(0, clip.out_ms - clip.in_ms)
-            for clip in clips
-        ],
+        *[clip.start_ms + max(0, clip.out_ms - clip.in_ms) for clip in clips],
     )
     if duration_ms <= 0:
-        return _to_wav(array("h", bytes(0)), 0), 0
+        return array("h"), 0
 
-    total = int(duration_ms * OUTPUT_RATE / 1000)
+    total = int(duration_ms * rate / 1000)
     mix = array("d", bytes(total * 8))
 
     for clip in clips:
@@ -118,13 +114,13 @@ def render_line(root: Path, line: LineDocument) -> tuple[bytes, int]:
         if path is None or not path.is_file():
             continue
         try:
-            data = _read_mono(path, OUTPUT_RATE)
+            data = _read_mono(path, rate)
         except (wave.Error, ValueError, EOFError):
             continue
 
-        start = int(clip.start_ms * OUTPUT_RATE / 1000)
-        offset = int(clip.in_ms * OUTPUT_RATE / 1000)
-        length = int((clip.out_ms - clip.in_ms) * OUTPUT_RATE / 1000)
+        start = int(clip.start_ms * rate / 1000)
+        offset = int(clip.in_ms * rate / 1000)
+        length = int((clip.out_ms - clip.in_ms) * rate / 1000)
         length = min(length, max(0, len(data) - offset), max(0, total - start))
         for index in range(length):
             mix[start + index] += data[offset + index]
@@ -133,19 +129,76 @@ def render_line(root: Path, line: LineDocument) -> tuple[bytes, int]:
     for index in range(total):
         # Sum as-is; only clamp what would overflow int16 so nothing wraps.
         output[index] = max(-INT16_MAX, min(INT16_MAX, int(mix[index])))
+    return output, duration_ms
 
-    return _to_wav(output, OUTPUT_RATE), duration_ms
+
+def render_line(
+    root: Path,
+    line: LineDocument,
+    export: ExportSettings | None = None,
+) -> tuple[bytes, int]:
+    """Mix a line into WAV bytes; returns the payload and its duration in ms."""
+    settings = export or ExportSettings()
+    samples, duration_ms = _render_samples(root, line, settings.sample_rate)
+    return (
+        _to_wav(samples, settings.sample_rate, settings.channels, settings.bit_depth),
+        duration_ms,
+    )
 
 
-def _to_wav(samples: array, rate: int) -> bytes:
+def render_range(
+    root: Path,
+    line: LineDocument,
+    start_ms: int,
+    end_ms: int,
+    export: ExportSettings | None = None,
+) -> tuple[bytes, int]:
+    """Render a slice of a line; used to save a selection as a reusable asset."""
+    settings = export or ExportSettings()
+    samples, _ = _render_samples(root, line, settings.sample_rate)
+    start = max(0, int(start_ms * settings.sample_rate / 1000))
+    end = min(len(samples), int(end_ms * settings.sample_rate / 1000))
+    if end <= start:
+        raise ValueError("The selection is empty")
+    return (
+        _to_wav(samples[start:end], settings.sample_rate, settings.channels, settings.bit_depth),
+        int((end - start) * 1000 / settings.sample_rate),
+    )
+
+
+def _to_wav(
+    samples: array,
+    rate: int,
+    channels: int = 1,
+    bit_depth: int = 16,
+) -> bytes:
     from io import BytesIO
+
+    if channels > 1:
+        interleaved = array("h")
+        for value in samples:
+            for _ in range(channels):
+                interleaved.append(value)
+        samples = interleaved
+
+    if bit_depth == 16:
+        payload = samples.tobytes()
+    elif bit_depth == 8:
+        payload = bytes(max(0, min(255, (value >> 8) + 128)) for value in samples)
+    elif bit_depth == 24:
+        buffer_bytes = bytearray()
+        for value in samples:
+            buffer_bytes += ((value << 8) & 0xFFFFFF).to_bytes(3, "little")
+        payload = bytes(buffer_bytes)
+    else:
+        raise ValueError(f"Unsupported bit depth: {bit_depth}")
 
     buffer = BytesIO()
     with wave.open(buffer, "wb") as handle:
-        handle.setnchannels(OUTPUT_CHANNELS)
-        handle.setsampwidth(2)
+        handle.setnchannels(channels)
+        handle.setsampwidth(bit_depth // 8)
         handle.setframerate(rate)
-        handle.writeframes(samples.tobytes())
+        handle.writeframes(payload)
     return buffer.getvalue()
 
 
@@ -156,7 +209,11 @@ def export_line(
 ) -> dict:
     """Render one line and write it under `<godot>/audio/voice/<section>/`."""
     root = root.expanduser().resolve()
-    payload, duration_ms = render_line(root, line)
+    export = settings.export
+    if export.container != "wav":
+        raise ValueError(f"Unsupported export container: {export.container}")
+
+    payload, duration_ms = render_line(root, line, export)
 
     godot = Path(settings.godot_project)
     if not godot.is_dir():
@@ -168,11 +225,7 @@ def export_line(
     target.write_bytes(payload)
 
     # Godot paths use res://, so make the destination relative to the project.
-    try:
-        audio_res = "res://" + str(target.relative_to(godot)).replace("\\", "/")
-    except ValueError:
-        audio_res = target.as_posix()
-
+    audio_res = _res_path(godot, target)
     writeback_ok, writeback_error = notify_editor(settings, line, audio_res)
 
     line.export_path = str(target)
@@ -188,6 +241,33 @@ def export_line(
         "writeback_ok": writeback_ok,
         "writeback_error": writeback_error,
     }
+
+
+def retry_writeback(
+    root: Path,
+    settings: ProjectSettings,
+    line: LineDocument,
+) -> tuple[bool, str | None]:
+    """Re-send a pending write-back without rendering the audio again."""
+    if not line.export_path:
+        raise ValueError("Line has no exported file yet; export it first")
+
+    godot = Path(settings.godot_project)
+    audio_res = _res_path(godot, Path(line.export_path))
+    ok, error = notify_editor(settings, line, audio_res)
+
+    line.export_status = "exported" if ok else "pending_writeback"
+    if ok:
+        line.exported_at = _now()
+    save_line(root, line)
+    return ok, error
+
+
+def _res_path(godot: Path, target: Path) -> str:
+    try:
+        return "res://" + str(target.relative_to(godot)).replace("\\", "/")
+    except ValueError:
+        return target.as_posix()
 
 
 def notify_editor(

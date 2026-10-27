@@ -9,6 +9,7 @@ from .blocks import (
     default_title,
     delete_block,
     delete_take,
+    duplicate_block,
     ensure_slot,
     list_blocks,
     load_block,
@@ -19,6 +20,10 @@ from .blocks import (
     update_block,
     update_slot,
 )
+from .cleanup import cleanup_orphans
+from .index import build_index, index_to_json, load_index, reload_index, save_index
+from .jobs import create_job, fail_interrupted, list_jobs, save_job
+from .secrets import configured_providers, get_secret, load_secrets, save_secret
 from .lines import list_lines, load_line, save_line, update_line, upsert_lines
 from .paths import project_paths, workspace_path
 from .project import (
@@ -32,6 +37,7 @@ from .project import (
     load_project,
     load_workspace,
     reorder_lines,
+    reorder_sections,
     save_project,
     save_workspace,
     set_character_voice,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..schemas import ProjectSettings, Section, WorkspaceState
+from ..schemas import ExportSettings, ProjectSettings, Section, WorkspaceState
 from .atomic import read_json, write_json_atomic
 from .paths import (
     DEFAULT_SECTION_ID,
@@ -133,14 +133,33 @@ def activate_section(root: Path, section_id: str) -> str:
     return section_id
 
 
-def update_settings(root: Path, recording_countdown_ms: int | None = None) -> ProjectSettings:
+def update_settings(
+    root: Path,
+    recording_countdown_ms: int | None = None,
+    export: ExportSettings | None = None,
+) -> ProjectSettings:
     root = root.expanduser().resolve()
     settings = load_project(root)
     if recording_countdown_ms is not None:
         settings.recording_countdown_ms = recording_countdown_ms
+    if export is not None:
+        settings.export = export
     settings.updated_at = _now()
     write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
     return settings
+
+
+def reorder_sections(root: Path, ids: list[str]) -> list[Section]:
+    """Persist the section order the user arranged in the sidebar."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    order = {section_id: index for index, section_id in enumerate(ids)}
+    for section in settings.sections:
+        if section.id in order:
+            section.order = order[section.id]
+    settings.sections.sort(key=lambda section: section.order)
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings.sections
 
 
 def reorder_lines(root: Path, uuids: list[str]) -> ProjectSettings:

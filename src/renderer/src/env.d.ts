@@ -15,6 +15,7 @@ export interface VoicePartnerBridge {
   close(): Promise<void>
   isMaximized(): Promise<boolean>
   onMaximizedChange(callback: (maximized: boolean) => void): () => void
+  restartService(): Promise<void>
 }
 
 declare global {

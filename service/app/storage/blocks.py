@@ -175,6 +175,17 @@ def update_block(
     return save_block(root, block)
 
 
+def duplicate_block(root: Path, block_id: str) -> BlockDocument:
+    """Copy a block: new document, shared take files, copied slots."""
+    source = load_block(root, block_id)
+    copy = source.model_copy(deep=True)
+    copy.id = uuid.uuid4().hex[:12]
+    copy.title = f"{source.title} (copy)"
+    copy.created_at = _now()
+    copy.updated_at = _now()
+    return save_block(root, copy)
+
+
 def delete_block(root: Path, block_id: str) -> None:
     path = block_path(root, block_id)
     if not path.is_file():

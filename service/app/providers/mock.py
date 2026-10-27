@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import wave
 
-from . import ModelInfo, ModelParam, Provider, SynthesisResult, VoiceInfo
+from . import Intent, ModelInfo, ModelParam, Provider, SynthesisResult, VoiceInfo
 SAMPLE_RATE = 24000
 TONE_HZ = 220
 MS_PER_CHARACTER = 110
@@ -37,6 +37,17 @@ class MockProvider(Provider):
         VoiceInfo(id="voice_a", label="Voice A"),
         VoiceInfo(id="voice_b", label="Voice B (lower)"),
     ]
+
+    def compile(
+        self,
+        intent: Intent,
+        model: str,
+        params: dict,
+        voice: str | None = None,
+        raw: bool = False,
+    ) -> dict:
+        # The mock provider speaks plain text and a pitch.
+        return {"prompt": intent.text, "voice": voice, **params}
 
     def synthesize(
         self,

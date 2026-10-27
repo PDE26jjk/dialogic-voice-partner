@@ -1,12 +1,26 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from .export import export_line as export_line_file
-from .generation import generate_take
+from .export import render_range, retry_writeback
+from .generation import generate_batch, generate_take
 from .providers.registry import get_provider, provider_infos
 from .schemas import (
+    AssetInfo,
+    BatchGenerateResult,
+    CleanupResult,
+    CredentialRequest,
+    GenerateBatchRequest,
+    Job,
+    ReloadResult,
+    SectionOrderRequest,
+    SelectionAssetRequest,
+    CleanupResult,
+    ReloadResult,
+    SectionOrderRequest,
     ActiveProject,
     AddTakeRequest,
     AssetInfo,
@@ -41,12 +55,18 @@ from .schemas import (
 from .storage import (
     activate_section,
     active_project,
+    build_index,
+    cleanup_orphans,
+    index_to_json,
+    load_index,
+    reload_index,
     add_take,
     convert_slot,
     create_block,
     create_project,
     create_section,
     delete_block,
+    duplicate_block,
     find_character_voice,
     delete_take,
     ensure_section,
@@ -61,8 +81,15 @@ from .storage import (
     load_project,
     load_workspace,
     reorder_lines,
+    reorder_sections,
     revert_prompt,
     save_asset,
+    configured_providers,
+    create_job,
+    fail_interrupted,
+    list_jobs,
+    save_secret,
+    save_job,
     save_line,
     save_project,
     save_workspace,
@@ -76,7 +103,17 @@ from .storage import (
     upsert_lines,
 )
 
-app = FastAPI(title="Dialogic Voice Partner Service", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Jobs left running by a previous process are failed, not lost.
+    try:
+        fail_interrupted(_active_root())
+    except Exception:  # noqa: BLE001 - startup must never fail on this
+        pass
+    yield
+
+
+app = FastAPI(title="Dialogic Voice Partner Service", version="0.1.0", lifespan=lifespan)
 
 
 def _active_root() -> Path:
@@ -373,15 +410,79 @@ def delete_take_endpoint(block_id: str, take_id: str) -> BlockDocument:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/jobs", response_model=list[Job])
+def list_jobs_endpoint() -> list[Job]:
+    """Generation history, newest last; interrupted jobs show as failed."""
+    return list_jobs(_active_root())
+
+
+@app.post("/blocks/{block_id}/generate-batch", response_model=list[BatchGenerateResult])
+def generate_batch_endpoint(
+    block_id: str,
+    request: GenerateBatchRequest,
+) -> list[BatchGenerateResult]:
+    """One take per provider; a provider error never blocks the rest."""
+    try:
+        return generate_batch(
+            _active_root(), block_id, request.providers, raw=request.raw
+        )
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/credentials", response_model=list[str])
+def list_credentials_endpoint() -> list[str]:
+    """Providers that have stored credentials; values are never returned."""
+    return configured_providers(_active_root())
+
+
+@app.put("/credentials/{provider}", response_model=list[str])
+def put_credentials_endpoint(provider: str, request: CredentialRequest) -> list[str]:
+    return save_secret(_active_root(), provider, request.values)
+
+
 @app.post("/blocks/{block_id}/generate", response_model=BlockDocument)
 def generate_endpoint(block_id: str, request: GenerateRequest) -> BlockDocument:
     """Synthesize the slot prompt now and append the audio as a new take."""
     try:
-        return generate_take(_active_root(), block_id, request.provider, request.model)
+        return generate_take(
+            _active_root(), block_id, request.provider, request.model, raw=request.raw
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/projects/index")
+def project_index(root: str | None = None) -> dict:
+    """Derived lookups for the whole project, rebuilding the cache if needed."""
+    target = Path(root).expanduser().resolve() if root else _active_root()
+    return index_to_json(load_index(target))
+
+
+@app.post("/projects/reload", response_model=ReloadResult)
+def project_reload(root: str | None = None) -> ReloadResult:
+    """Pick up documents edited outside the app without a restart."""
+    target = Path(root).expanduser().resolve() if root else _active_root()
+    index = reload_index(target)
+    return ReloadResult(
+        sections=len(index.sections),
+        lines=len(index.lines),
+        blocks=len(index.blocks),
+        orphans=len(index.orphans),
+        take_refs=len(index.take_refs),
+    )
+
+
+@app.post("/projects/cleanup", response_model=CleanupResult)
+def project_cleanup(
+    root: str | None = None,
+    remove_files: bool = True,
+) -> CleanupResult:
+    """Delete orphaned blocks and the take files nothing references."""
+    target = Path(root).expanduser().resolve() if root else _active_root()
+    return cleanup_orphans(target, remove_files=remove_files)
 
 
 @app.get("/projects/active", response_model=ActiveProject | None)
@@ -437,7 +538,7 @@ def update_line_endpoint(line_uuid: str, request: UpdateLineRequest) -> LineDocu
 @app.patch("/projects/settings", response_model=ProjectSettings)
 def update_settings_endpoint(request: UpdateSettingsRequest) -> ProjectSettings:
     """Update project-level preferences such as the recording countdown."""
-    return update_settings(_active_root(), request.recording_countdown_ms)
+    return update_settings(_active_root(), request.recording_countdown_ms, request.export)
 
 
 @app.post("/lines/{line_uuid}/export", response_model=ExportResult)
@@ -453,6 +554,77 @@ def export_line_endpoint(line_uuid: str) -> ExportResult:
         return ExportResult(**export_line_file(root, settings, line))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/assets/render", response_model=AssetInfo)
+def render_asset_endpoint(request: SelectionAssetRequest) -> AssetInfo:
+    """Save the selected slice of a line as a shared asset."""
+    root = _active_root()
+    settings = load_project(root)
+    try:
+        line = load_line(root, request.line_uuid)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        payload, duration_ms = render_range(
+            root,
+            line,
+            request.start_ms,
+            request.end_ms,
+            settings.export,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    name = request.name or f"{line.character_name or line.character or 'selection'} {request.start_ms}-{request.end_ms}ms"
+    return save_asset(root, name, payload, "wav", duration_ms)
+
+
+@app.post("/assets/upload", response_model=AssetInfo)
+async def upload_asset_endpoint(request: Request, name: str = Query(default="upload")) -> AssetInfo:
+    """Store an audio file posted as a raw body and list it in the pool."""
+    root = _active_root()
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else "wav"
+    if extension not in {"wav", "mp3", "ogg", "flac", "m4a"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio type: {extension}")
+    return save_asset(root, name, body, extension, None)
+
+
+@app.post("/lines/{line_uuid}/writeback", response_model=ExportResult)
+def retry_writeback_endpoint(line_uuid: str) -> ExportResult:
+    """Re-send a pending write-back for an already rendered line."""
+    root = _active_root()
+    settings = load_project(root)
+    try:
+        line = load_line(root, line_uuid)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        ok, error = retry_writeback(root, settings, line)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return ExportResult(
+        line_uuid=line.uuid,
+        ok=ok,
+        path=line.export_path,
+        writeback_ok=ok,
+        writeback_error=error,
+        error=None if ok else "write-back failed",
+    )
+
+
+@app.post("/blocks/{block_id}/duplicate", response_model=BlockDocument)
+def duplicate_block_endpoint(block_id: str) -> BlockDocument:
+    """Copy a block; the audio files are shared, slots and prompt are copied."""
+    try:
+        return duplicate_block(_active_root(), block_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/export", response_model=list[ExportResult])
@@ -666,6 +838,12 @@ def create_section_endpoint(request: CreateSectionRequest) -> Section:
         return create_section(root, request.id, request.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/projects/sections/order", response_model=list[Section])
+def reorder_sections_endpoint(request: SectionOrderRequest) -> list[Section]:
+    """Persist the user's section order."""
+    return reorder_sections(_active_root(), request.ids)
 
 
 @app.patch("/projects/sections/{section_id}", response_model=Section)
