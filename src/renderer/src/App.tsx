@@ -2062,11 +2062,13 @@ export default function App() {
                     current.map((item) => (item.uuid === saved.uuid ? saved : item))
                   )
                 }}
-                onInserted={(lineUuid) =>
+                onInserted={(lineUuid) => {
                   setExpandedLines((current) =>
                     current.includes(lineUuid) ? current : [...current, lineUuid]
                   )
-                }
+                  // Inserting changes which lines reference an asset.
+                  void load()
+                }}
                 onClipSelected={(clip, setGain) => {
                   if (!clip) return
                   setClipInfo(clip)

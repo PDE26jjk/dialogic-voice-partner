@@ -2024,3 +2024,10 @@ h3.with-action {
   border-color: #3fb27f;
   box-shadow: 0 0 0 1px #3fb27f, 0 0 12px rgba(63, 178, 127, 0.35);
 }
+
+
+/* Workspace asset clips use the same green as line asset clips. */
+.lane-clip.asset {
+  border-color: #3fb27f;
+  background: rgba(63, 178, 127, 0.16);
+}

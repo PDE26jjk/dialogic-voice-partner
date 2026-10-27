@@ -1450,7 +1450,7 @@ export default function SectionWorkbench({
               track.clips.map((clip) => (
                 <div
                   key={clip.id}
-                  className={`lane-clip${selectedClips.includes(clip.id) ? ' selected' : ''}${
+                  className={`lane-clip ${clip.source.kind}${selectedClips.includes(clip.id) ? ' selected' : ''}${
                     track.muted ? ' muted' : ''
                   }`}
                   style={{
