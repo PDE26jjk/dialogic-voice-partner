@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..providers.registry import PROVIDERS
 from ..schemas import BlockDocument, BlockLinks, BlockSlot, Take
 from .atomic import read_json, write_json_atomic
 from .lines import load_line, list_lines
@@ -127,6 +128,20 @@ def create_block(
     if section:
         block.links.sections = [section]
 
+    # A fresh block always has one usable slot, so its inspector is never empty.
+    default_provider = next(iter(PROVIDERS.values()), None)
+    if default_provider and default_provider.models:
+        model = default_provider.models[0]
+        key = slot_key(default_provider.id, model.id)
+        block.slots[key] = BlockSlot(
+            provider=default_provider.id,
+            model=model.id,
+            voice=default_provider.voices[0].id if default_provider.voices else None,
+            prompt=block.text,
+            params=model.defaults(),
+        )
+        block.active_slot = key
+
     return save_block(root, block)
 
 
@@ -137,10 +152,16 @@ def update_block(
     links: BlockLinks | None = None,
     active_slot: str | None = None,
     active_take: str | None = None,
+    character: str | None = None,
+    character_name: str | None = None,
 ) -> BlockDocument:
     block = load_block(root, block_id)
     if title is not None:
         block.title = title
+    if character is not None:
+        block.character = character
+    if character_name is not None:
+        block.character_name = character_name
     if links is not None:
         block.links = links
     if active_slot is not None:
@@ -178,6 +199,7 @@ def update_slot(
     key: str,
     prompt: str | None = None,
     params: dict | None = None,
+    voice: str | None = None,
 ) -> BlockDocument:
     block = load_block(root, block_id)
     slot = block.slots.get(key)
@@ -189,6 +211,9 @@ def update_slot(
         slot.prompt = prompt
     if params is not None:
         slot.params = params
+    if voice is not None:
+        # An empty string clears the override and falls back to the character mapping.
+        slot.voice = voice or None
     slot.updated_at = _now()
     block.active_slot = key
     return save_block(root, block)

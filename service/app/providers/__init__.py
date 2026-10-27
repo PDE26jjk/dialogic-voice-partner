@@ -4,6 +4,20 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ModelParam:
+    """One native parameter a model exposes, described for the inspector."""
+
+    id: str
+    label: str
+    type: str = "number"  # number | text | boolean
+    default: Any = None
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
 
 
 @dataclass(frozen=True)
@@ -12,7 +26,22 @@ class ModelInfo:
 
     id: str
     label: str
-    params: dict = field(default_factory=dict)
+    params: list[ModelParam] = field(default_factory=list)
+
+    def defaults(self) -> dict:
+        return {
+            param.id: param.default
+            for param in self.params
+            if param.default is not None
+        }
+
+
+@dataclass(frozen=True)
+class VoiceInfo:
+    """A named voice a provider can speak with."""
+
+    id: str
+    label: str
 
 
 @dataclass
@@ -30,9 +59,16 @@ class Provider(ABC):
     id: str
     label: str
     models: list[ModelInfo]
+    voices: list[VoiceInfo] = []
 
     @abstractmethod
-    def synthesize(self, model: str, prompt: str, params: dict) -> SynthesisResult:
+    def synthesize(
+        self,
+        model: str,
+        prompt: str,
+        params: dict,
+        voice: str | None = None,
+    ) -> SynthesisResult:
         """Return audio for one prompt; raise on provider errors."""
 
     def find_model(self, model_id: str) -> ModelInfo:

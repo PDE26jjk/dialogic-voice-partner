@@ -75,6 +75,8 @@ export interface BlockSlot {
   provider: string
   /** Model */
   model: string
+  /** Voice override for this slot; falls back to the character mapping */
+  voice?: string | null
   /** Prompt sent to this model */
   prompt: string
   /** Provider-native parameters for this model */
@@ -83,6 +85,22 @@ export interface BlockSlot {
   history: Array<string>
   /** Updated At */
   updated_at?: string | null
+}
+
+/** A Dialogic character seen in the project, with its current voice mapping. */
+export interface CharacterInfo {
+  /** Id */
+  id: string
+  /** Name */
+  name: string
+  /** Lines */
+  lines: number
+  /** Provider */
+  provider?: string | null
+  /** Voice */
+  voice?: string | null
+  /** Voice Label */
+  voice_label?: string | null
 }
 
 /** One placement on a line's single track, in milliseconds. */
@@ -106,6 +124,14 @@ export interface CreateBlockRequest {
   title?: string | null
   /** Section to link the block to */
   section?: string | null
+}
+
+/** CreateCharacterRequest */
+export interface CreateCharacterRequest {
+  /** Dialogic character id */
+  id: string
+  /** Display name */
+  name: string
 }
 
 /** CreateProjectRequest */
@@ -132,6 +158,32 @@ export interface EnsureSlotRequest {
   provider: string
   /** Model */
   model: string
+}
+
+/** Batch export request; an empty list means every line of the section. */
+export interface ExportLineRequest {
+  /** Uuids */
+  uuids: Array<string>
+}
+
+/** ExportResult */
+export interface ExportResult {
+  /** Line Uuid */
+  line_uuid: string
+  /** Path */
+  path?: string | null
+  /** Duration Ms */
+  duration_ms: number
+  /** Ok */
+  ok: boolean
+  /** Error */
+  error?: string | null
+  /** True when a clip spans more silence than its source provides */
+  short_source: boolean
+  /** True when the Godot editor confirmed the .dtl update */
+  writeback_ok: boolean
+  /** Writeback Error */
+  writeback_error?: string | null
 }
 
 /** GenerateRequest */
@@ -168,9 +220,13 @@ export interface LineDocument {
   character_name?: string | null
   /** Spoken text copied from the paired text event */
   text: string
-  /** Text was edited here and must not be replaced by a Godot push */
-  text_overridden: boolean
   track: Track
+  /** Last rendered file, absolute */
+  export_path?: string | null
+  /** Exported At */
+  exported_at?: string | null
+  /** none, exported, or pending_writeback when the editor call failed */
+  export_status: string
   /** Updated At */
   updated_at?: string | null
 }
@@ -197,8 +253,12 @@ export interface ProjectSettings {
   line_order: Array<string>
   /** Delay before recording starts, in milliseconds */
   recording_countdown_ms: number
+  /** Local HTTP endpoint exposed by the Godot editor plugin */
+  editor_endpoint: string
   /** Per-provider settings, including character to voice mappings */
   providers: Record<string, unknown>
+  /** Character id to display name, editable from the characters panel */
+  characters: Record<string, string>
   /** Created At */
   created_at?: string | null
   /** Updated At */
@@ -213,10 +273,40 @@ export interface ProviderInfo {
   label: string
   /** Models */
   models: Array<ProviderModel>
+  /** Voices that can be mapped to characters */
+  voices: Array<ProviderVoice>
 }
 
 /** ProviderModel */
 export interface ProviderModel {
+  /** Id */
+  id: string
+  /** Label */
+  label: string
+  /** Params */
+  params: Array<ProviderParam>
+}
+
+/** One native parameter a model exposes, described for the inspector. */
+export interface ProviderParam {
+  /** Id */
+  id: string
+  /** Label */
+  label: string
+  /** Type */
+  type: string
+  /** Default */
+  default: unknown
+  /** Minimum */
+  minimum?: number | null
+  /** Maximum */
+  maximum?: number | null
+  /** Step */
+  step?: number | null
+}
+
+/** ProviderVoice */
+export interface ProviderVoice {
   /** Id */
   id: string
   /** Label */
@@ -271,6 +361,14 @@ export interface Section {
   order: number
 }
 
+/** SetCharacterVoiceRequest */
+export interface SetCharacterVoiceRequest {
+  /** Provider */
+  provider: string
+  /** Voice */
+  voice: string
+}
+
 /** Where a clip or workspace source takes its audio from. */
 export interface SourceRef {
   /** Where the audio comes from */
@@ -316,6 +414,18 @@ export interface UpdateBlockRequest {
   active_slot?: string | null
   /** Active Take */
   active_take?: string | null
+  /** Character */
+  character?: string | null
+  /** Character Name */
+  character_name?: string | null
+}
+
+/** UpdateCharacterRequest */
+export interface UpdateCharacterRequest {
+  /** Name */
+  name?: string | null
+  /** New character id; lines and voice mappings are migrated with it */
+  id?: string | null
 }
 
 /** Editable line fields; the Godot timeline is still the source for events. */
@@ -348,6 +458,8 @@ export interface UpdateSlotRequest {
   prompt?: string | null
   /** Params */
   params?: Record<string, unknown> | null
+  /** Voice */
+  voice?: string | null
 }
 
 /** ValidationError */

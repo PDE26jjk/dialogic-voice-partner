@@ -101,9 +101,17 @@ class ProjectSettings(BaseModel):
         le=10000,
         description="Delay before recording starts, in milliseconds",
     )
+    editor_endpoint: str = Field(
+        default="http://127.0.0.1:3901",
+        description="Local HTTP endpoint exposed by the Godot editor plugin",
+    )
     providers: dict[str, Any] = Field(
         default_factory=dict,
         description="Per-provider settings, including character to voice mappings",
+    )
+    characters: dict[str, str] = Field(
+        default_factory=dict,
+        description="Character id to display name, editable from the characters panel",
     )
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -125,6 +133,12 @@ class LineDocument(BaseModel):
     character_name: str | None = Field(default=None, description="Character display name")
     text: str = Field(description="Spoken text copied from the paired text event")
     track: Track = Field(default_factory=Track)
+    export_path: str | None = Field(default=None, description="Last rendered file, absolute")
+    exported_at: datetime | None = None
+    export_status: str = Field(
+        default="none",
+        description="none, exported, or pending_writeback when the editor call failed",
+    )
     updated_at: datetime | None = None
 
 
@@ -189,6 +203,10 @@ class BlockSlot(BaseModel):
 
     provider: str
     model: str
+    voice: str | None = Field(
+        default=None,
+        description="Voice override for this slot; falls back to the character mapping",
+    )
     prompt: str = Field(default="", description="Prompt sent to this model")
     params: dict[str, Any] = Field(
         default_factory=dict,
@@ -255,6 +273,8 @@ class UpdateBlockRequest(BaseModel):
     links: BlockLinks | None = None
     active_slot: str | None = None
     active_take: str | None = None
+    character: str | None = None
+    character_name: str | None = None
 
 
 class EnsureSlotRequest(BaseModel):
@@ -265,6 +285,7 @@ class EnsureSlotRequest(BaseModel):
 class UpdateSlotRequest(BaseModel):
     prompt: str | None = None
     params: dict[str, Any] | None = None
+    voice: str | None = None
 
 
 class AddTakeRequest(BaseModel):
@@ -273,7 +294,25 @@ class AddTakeRequest(BaseModel):
     duration_ms: int | None = None
 
 
+class ProviderParam(BaseModel):
+    """One native parameter a model exposes, described for the inspector."""
+
+    id: str
+    label: str
+    type: str = "number"
+    default: Any = None
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+
+
 class ProviderModel(BaseModel):
+    id: str
+    label: str
+    params: list[ProviderParam] = Field(default_factory=list)
+
+
+class ProviderVoice(BaseModel):
     id: str
     label: str
 
@@ -284,6 +323,41 @@ class ProviderInfo(BaseModel):
     id: str
     label: str
     models: list[ProviderModel]
+    voices: list[ProviderVoice] = Field(
+        default_factory=list,
+        description="Voices that can be mapped to characters",
+    )
+
+
+class CharacterInfo(BaseModel):
+    """A Dialogic character seen in the project, with its current voice mapping."""
+
+    id: str
+    name: str
+    lines: int = 0
+    provider: str | None = None
+    voice: str | None = None
+    voice_label: str | None = None
+
+
+class SetCharacterVoiceRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    voice: str = Field(min_length=1)
+
+
+class CreateCharacterRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=64, description="Dialogic character id")
+    name: str = Field(min_length=1, description="Display name")
+
+
+class UpdateCharacterRequest(BaseModel):
+    name: str | None = None
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="New character id; lines and voice mappings are migrated with it",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -317,3 +391,26 @@ class UpdateLineRequest(BaseModel):
 
 class UpdateSettingsRequest(BaseModel):
     recording_countdown_ms: int | None = Field(default=None, ge=0, le=10000)
+
+
+class ExportLineRequest(BaseModel):
+    """Batch export request; an empty list means every line of the section."""
+
+    uuids: list[str] = Field(default_factory=list)
+
+
+class ExportResult(BaseModel):
+    line_uuid: str
+    path: str | None = None
+    duration_ms: int = 0
+    ok: bool = True
+    error: str | None = None
+    short_source: bool = Field(
+        default=False,
+        description="True when a clip spans more silence than its source provides",
+    )
+    writeback_ok: bool = Field(
+        default=False,
+        description="True when the Godot editor confirmed the .dtl update",
+    )
+    writeback_error: str | None = None

@@ -26,7 +26,16 @@ export function useTakeAudio(blocks: BlockDocument[]) {
     (clip: Clip): string | null => {
       if (clip.source.kind === 'asset') return clip.source.asset ?? null
       const block = blocks.find((item) => item.id === clip.source.block)
-      const take = block?.takes.find((item) => item.id === clip.source.take)
+      if (!block) return null
+      // The block's active take wins, so switching it updates every clip that
+      // references the block without touching their in/out points.
+      const active = block.active_take
+        ? block.takes.find((take) => take.id === block.active_take)
+        : undefined
+      const take =
+        active ??
+        block.takes.find((item) => item.id === clip.source.take) ??
+        block.takes.at(-1)
       return take?.asset ?? clip.source.asset ?? null
     },
     [blocks]

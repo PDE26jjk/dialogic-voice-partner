@@ -9,24 +9,49 @@ from __future__ import annotations
 import io
 import wave
 
-from . import ModelInfo, Provider, SynthesisResult
+from . import ModelInfo, ModelParam, Provider, SynthesisResult, VoiceInfo
 SAMPLE_RATE = 24000
 TONE_HZ = 220
 MS_PER_CHARACTER = 110
 MIN_DURATION_MS = 700
+
+PITCH = ModelParam(
+    id="pitch",
+    label="Pitch",
+    type="number",
+    default=1.0,
+    minimum=0.5,
+    maximum=2.0,
+    step=0.05,
+)
 
 
 class MockProvider(Provider):
     id = "mock"
     label = "Mock (local tone)"
     models = [
-        ModelInfo(id="tone", label="Tone", params={"pitch": 1.0}),
-        ModelInfo(id="tone-low", label="Low tone", params={"pitch": 0.7}),
+        ModelInfo(id="tone", label="Tone", params=[PITCH]),
     ]
 
-    def synthesize(self, model: str, prompt: str, params: dict) -> SynthesisResult:
+    voices = [
+        VoiceInfo(id="voice_a", label="Voice A"),
+        VoiceInfo(id="voice_b", label="Voice B (lower)"),
+    ]
+
+    def synthesize(
+        self,
+        model: str,
+        prompt: str,
+        params: dict,
+        voice: str | None = None,
+    ) -> SynthesisResult:
         info = self.find_model(model)
-        pitch = float(params.get("pitch", info.params.get("pitch", 1.0)))
+        defaults = info.defaults()
+        pitch = float(params.get("pitch", defaults.get("pitch", 1.0)))
+        if voice == "voice_b":
+            pitch *= 0.7
+        if voice == "voice_b":
+            pitch *= 0.7
         duration_ms = max(MIN_DURATION_MS, len(prompt.strip()) * MS_PER_CHARACTER)
         frequency = TONE_HZ * pitch
 

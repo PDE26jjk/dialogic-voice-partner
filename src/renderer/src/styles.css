@@ -107,8 +107,14 @@ h2 {
   min-height: 0;
 }
 
-.right > .pane {
-  flex: 1 1 0;
+.right > .pane.pool {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.right > .pane.inspector {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 /* Draggable separators between panes. */
@@ -427,6 +433,85 @@ h2 {
   font-weight: 600;
 }
 
+.character-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.character-row {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.character-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.character-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.character-name:hover {
+  border-color: var(--border);
+}
+
+.character-name:focus {
+  border-color: var(--accent);
+  background: #12141a;
+  outline: none;
+}
+
+.character-new {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.character-new input {
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.character-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.character-controls select {
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 11px;
+}
+
 .setting {
   display: flex;
   flex-direction: column;
@@ -691,6 +776,17 @@ h2 {
   color: var(--bad);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.head-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.export-path {
+  word-break: break-all;
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .line-list {
@@ -1060,3 +1156,210 @@ h3 {
 }
 
 
+
+/* --- characters, tabs and view switches -------------------------------- */
+
+.character-picker select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.character-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.field input,
+.field select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.view-switch {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.tab {
+  flex: 1 1 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tab.on {
+  border-color: var(--accent);
+  background: rgba(91, 140, 255, 0.16);
+  color: var(--text);
+}
+
+.slot-select {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.param {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.param input {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #12141a;
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* --- main tabs, character page, param rows ----------------------------- */
+
+.main-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.characters-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+}
+
+.character-detail.wide {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.character-detail.wide .slot-actions {
+  grid-column: 1 / -1;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.param-row input,
+.param-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.revert {
+  flex: 0 0 auto;
+  width: 24px;
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.revert:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.revert:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.block-title-input {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.block-title-input:hover {
+  border-color: var(--border);
+}
+
+.block-title-input:focus {
+  border-color: var(--accent);
+  background: #12141a;
+  outline: none;
+}
+
+/* --- lane heads stay aligned while the lanes scroll ------------------- */
+
+.editor-heads {
+  overflow: hidden;
+}
+
+.editor-heads-inner {
+  will-change: transform;
+}
+
+.editor-head {
+  flex: 0 0 auto;
+}
+
+/* Razor tool feedback. */
+.editor.tool-razor .editor-content,
+.editor.tool-razor .lane-clip {
+  cursor: crosshair;
+}
+
+.editor.tool-razor .lane-clip .clip-grip {
+  cursor: crosshair;
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { sendJson } from './lib/api'
 import { useClipsPlayback } from './lib/use-clips-playback'
 import { drawClipWave, useTakeAudio } from './lib/use-take-audio'
@@ -46,6 +46,9 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
   const [dropActive, setDropActive] = useState(false)
 
   const canvas = useRef<HTMLCanvasElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const panRef = useRef<{ x: number; y: number; left: number } | null>(null)
+  const pendingScrollRef = useRef<number | null>(null)
   const ruler = useRef<HTMLCanvasElement>(null)
   const drag = useRef<{ index: number; startX: number; start: number; moved: boolean } | null>(null)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -179,6 +182,37 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
     seekFromEvent(event)
   }
+
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+
+  // Wheel zooms the line timeline around the pointer.
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const onWheel = (event: WheelEvent): void => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      event.preventDefault()
+      const current = zoomRef.current
+      const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2
+      const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(current * factor)))
+      if (next === current) return
+      const rect = element.getBoundingClientRect()
+      const pointerX = event.clientX - rect.left + element.scrollLeft
+      const atMs = (pointerX / current) * 1000
+      pendingScrollRef.current = Math.max(0, (atMs / 1000) * next - (event.clientX - rect.left))
+      setZoom(next)
+    }
+    element.addEventListener('wheel', onWheel, { passive: false })
+    return () => element.removeEventListener('wheel', onWheel)
+  }, [])
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current
+    if (pending === null) return
+    pendingScrollRef.current = null
+    if (scrollRef.current) scrollRef.current.scrollLeft = pending
+  }, [zoom])
 
   const save = async (next: Clip[]): Promise<void> => {
     setError(null)
@@ -361,6 +395,14 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
 
         <div className="clip-form">
           <button
+            className="button small"
+            type="button"
+            disabled={clips.length === 0}
+            onClick={() => void save([])}
+          >
+            Clear
+          </button>
+          <button
             className={`button small${recording ? ' primary' : ''}`}
             type="button"
             onClick={() => (recording ? stopRecording() : void startRecording())}
@@ -372,7 +414,32 @@ export default function LineTrack({ line, blocks, countdownMs, onSaved }: LineTr
 
       {error ? <p className="error">{error}</p> : null}
 
-      <div className="line-track-scroll">
+      <div
+        ref={scrollRef}
+        className="line-track-scroll"
+        onPointerDown={(event) => {
+          if (event.button !== 1) return
+          event.preventDefault()
+          panRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            left: event.currentTarget.scrollLeft
+          }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          const pan = panRef.current
+          if (!pan) return
+          event.currentTarget.scrollLeft = Math.max(0, pan.left - (event.clientX - pan.x))
+        }}
+        onPointerUp={(event) => {
+          if (!panRef.current) return
+          panRef.current = null
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
+        }}
+      >
         <div
           className="line-track-content"
           style={{ width, height: RULER_HEIGHT + CANVAS_HEIGHT }}

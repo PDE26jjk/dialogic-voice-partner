@@ -7,9 +7,13 @@ import type {
   ActiveProject,
   BlockDocument,
   BlockSlot,
+  CharacterInfo,
+  ExportResult,
   LineDocument,
   ProjectSettings,
   ProviderInfo,
+  ProviderParam,
+  ProviderVoice,
   WorkspaceClip
 } from './lib/api-types'
 
@@ -49,8 +53,7 @@ export default function App() {
   const [selectedLines, setSelectedLines] = useState<string[]>([])
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
-  const [newProviderId, setNewProviderId] = useState('')
-  const [newModelId, setNewModelId] = useState('')
+  const [characters, setCharacters] = useState<CharacterInfo[]>([])
   const [leftOpen, toggleLeft] = usePaneOpen('dvp.pane.left.open')
   const [rightOpen, toggleRight] = usePaneOpen('dvp.pane.right.open')
   const [bottomOpen, toggleBottom] = usePaneOpen('dvp.pane.workspace.open')
@@ -64,6 +67,13 @@ export default function App() {
     null
   )
   const [countdownDraft, setCountdownDraft] = useState('')
+  const [newCharacterId, setNewCharacterId] = useState('')
+  const [newCharacterName, setNewCharacterName] = useState('')
+  const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null)
+  const [blockView, setBlockView] = useState<'linked' | 'orphan' | 'all'>('all')
+  const [blockTab, setBlockTab] = useState<'details' | 'takes'>('details')
+  const [mainTab, setMainTab] = useState<'lines' | 'characters'>('lines')
+  const [slotKey, setSlotKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -89,6 +99,14 @@ export default function App() {
     minimum: 120,
     initial: 300,
     maximum: 640
+  })
+  const inspector = useResizable({
+    storageKey: 'dvp.pane.inspector',
+    axis: 'y',
+    invert: true,
+    minimum: 180,
+    initial: 320,
+    maximum: 900
   })
 
   useEffect(() => {
@@ -141,14 +159,16 @@ export default function App() {
         setBlocks([])
         return
       }
-      const [items, pool, registry] = await Promise.all([
+      const [items, pool, registry, roles] = await Promise.all([
         apiJson<LineDocument[]>('/lines'),
         apiJson<BlockDocument[]>('/blocks'),
-        apiJson<ProviderInfo[]>('/providers')
+        apiJson<ProviderInfo[]>('/providers'),
+        apiJson<CharacterInfo[]>('/characters')
       ])
       setLines(items)
       setBlocks(pool)
       setProviders(registry)
+      setCharacters(roles)
     } catch (caught) {
       setError(toMessage(caught))
     } finally {
@@ -165,6 +185,82 @@ export default function App() {
     setBlocks((previous) =>
       previous.map((block) => (block.id === updated.id ? updated : block))
     )
+  }
+
+  const saveCharacterVoice = async (
+    id: string,
+    provider: string,
+    voice: string
+  ): Promise<void> => {
+    setError(null)
+    try {
+      const updated = await sendJson<CharacterInfo>(
+        'PUT',
+        `/characters/${encodeURIComponent(id)}/voice`,
+        { provider, voice }
+      )
+      setCharacters((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const createCharacter = async (): Promise<void> => {
+    const id = newCharacterId.trim()
+    const name = newCharacterName.trim() || id
+    if (!id) return
+    setError(null)
+    try {
+      const created = await sendJson<CharacterInfo>('POST', '/characters', { id, name })
+      setCharacters((current) => [...current, created])
+      setNewCharacterId('')
+      setNewCharacterName('')
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const updateCharacter = async (
+    id: string,
+    patch: { id?: string; name?: string }
+  ): Promise<void> => {
+    setError(null)
+    try {
+      const updated = await sendJson<CharacterInfo>(
+        'PATCH',
+        `/characters/${encodeURIComponent(id)}`,
+        patch
+      )
+      setCharacters((current) =>
+        current.map((item) => (item.id === id || item.id === updated.id ? updated : item))
+      )
+      setActiveCharacterId(updated.id)
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const resetCharacterVoice = async (id: string): Promise<void> => {
+    setError(null)
+    try {
+      await sendJson('DELETE', `/characters/${encodeURIComponent(id)}/voice`)
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const deleteCharacter = async (id: string): Promise<void> => {
+    setError(null)
+    try {
+      await sendJson('DELETE', `/characters/${encodeURIComponent(id)}`)
+      setCharacters((current) => current.filter((item) => item.id !== id))
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
   }
 
   const switchSection = async (sectionId: string): Promise<void> => {
@@ -194,18 +290,21 @@ export default function App() {
     }
   }
 
-  const chosenProvider = providers.find((provider) => provider.id === newProviderId) ?? providers[0]
-  const chosenModel =
-    chosenProvider?.models.find((model) => model.id === newModelId) ?? chosenProvider?.models[0]
 
-  const createSlot = async (): Promise<void> => {
-    const current = blocks.find((block) => block.id === selectedBlock)
-    if (!current || !chosenProvider || !chosenModel) return
+  /** A provider is what the UI calls a model; its first model is used internally. */
+  const selectModel = async (providerId: string): Promise<void> => {
+    if (!currentBlock) return
+    const provider = providers.find((item) => item.id === providerId)
+    const model = provider?.models[0]
+    if (!provider || !model) return
+    const key = `${provider.id}/${model.id}`
+    setSlotKey(key)
+    if (currentBlock.slots[key]) return
     setError(null)
     try {
-      const updated = await sendJson<BlockDocument>('POST', `/blocks/${current.id}/slots`, {
-        provider: chosenProvider.id,
-        model: chosenModel.id
+      const updated = await sendJson<BlockDocument>('POST', `/blocks/${currentBlock.id}/slots`, {
+        provider: provider.id,
+        model: model.id
       })
       applyBlock(updated)
     } catch (caught) {
@@ -234,7 +333,71 @@ export default function App() {
   const currentBlock = blocks.find((block) => block.id === selectedBlock) ?? null
   const selectedLine = selectedLines.at(-1) ?? null
   const currentLine = lines.find((line) => line.uuid === selectedLine) ?? null
+
+  const activeCharacter =
+    characters.find((character) => character.id === activeCharacterId) ?? characters[0] ?? null
+  const activeSlotKey =
+    slotKey ?? currentBlock?.active_slot ?? Object.keys(currentBlock?.slots ?? {})[0] ?? null
+
+  const activeSlot = currentBlock && activeSlotKey ? currentBlock.slots[activeSlotKey] : null
+  const activeProvider =
+    providers.find((provider) => provider.id === activeSlot?.provider) ??
+    providers[0] ??
+    null
+  const activeModelDef =
+    activeProvider?.models.find((model) => model.id === activeSlot?.model) ??
+    activeProvider?.models[0] ??
+    null
+  const activeModelParams = activeModelDef?.params ?? []
+
+  const visibleBlocks = blocks.filter((block) => {
+    if (blockView === 'orphan') return block.links.lines.length === 0
+    if (blockView === 'linked') {
+      return selectedLine ? block.links.lines.includes(selectedLine) : false
+    }
+    return true
+  })
+
+  useEffect(() => {
+    setSlotKey(currentBlock?.active_slot ?? Object.keys(currentBlock?.slots ?? {})[0] ?? null)
+    setBlockTab('details')
+  }, [currentBlock?.id])
   const sections = project?.project.sections ?? []
+
+  const exportLine = async (uuid: string): Promise<void> => {
+    setError(null)
+    try {
+      const result = await sendJson<ExportResult>('POST', `/lines/${uuid}/export`)
+      if (!result.ok) {
+        setError(result.error ?? 'Export failed')
+      } else if (!result.writeback_ok) {
+        setError(
+          `Audio exported, but the Godot editor is not reachable: ${result.writeback_error ?? ''}`
+        )
+      }
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const exportAll = async (): Promise<void> => {
+    setError(null)
+    try {
+      const results = await sendJson<ExportResult[]>('POST', '/export', {
+        uuids: lines.map((line) => line.uuid)
+      })
+      const failed = results.filter((result) => !result.ok)
+      if (failed.length > 0) {
+        setError(
+          `${failed.length}/${results.length} line(s) failed: ${failed[0].error ?? 'unknown error'}`
+        )
+      }
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
 
   const saveLineText = async (): Promise<void> => {
     if (!currentLine) return
@@ -246,6 +409,39 @@ export default function App() {
       setLines((current) =>
         current.map((item) => (item.uuid === saved.uuid ? saved : item))
       )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+
+  const setLineCharacter = async (
+    line: LineDocument,
+    characterId: string
+  ): Promise<void> => {
+    const character = characters.find((item) => item.id === characterId)
+    setError(null)
+    try {
+      const saved = await sendJson<LineDocument>('PATCH', `/lines/${line.uuid}`, {
+        character: characterId,
+        character_name: character?.name ?? characterId
+      })
+      setLines((current) =>
+        current.map((item) => (item.uuid === saved.uuid ? saved : item))
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const updateBlockField = async (
+    id: string,
+    patch: Record<string, unknown>
+  ): Promise<void> => {
+    setError(null)
+    try {
+      const updated = await sendJson<BlockDocument>('PATCH', `/blocks/${id}`, patch)
+      applyBlock(updated)
     } catch (caught) {
       setError(toMessage(caught))
     }
@@ -434,16 +630,181 @@ export default function App() {
         ) : null}
 
         <section className="pane lines">
-          <div className="lines-head">
-            <h2>Lines ({lines.length})</h2>
+          <div className="main-tabs">
             <button
               type="button"
-              className={`toggle${reorderMode ? ' on' : ''}`}
-              onClick={() => setReorderMode((enabled) => !enabled)}
-              title="Show drag handles to reorder lines"
+              className={`tab${mainTab === 'lines' ? ' on' : ''}`}
+              onClick={() => setMainTab('lines')}
             >
-              Reorder
+              Lines ({lines.length})
             </button>
+            <button
+              type="button"
+              className={`tab${mainTab === 'characters' ? ' on' : ''}`}
+              onClick={() => setMainTab('characters')}
+            >
+              Characters ({characters.length})
+            </button>
+          </div>
+
+          {mainTab === 'characters' ? (
+            <div className="characters-page">
+              {characters.length === 0 ? (
+                <p className="muted">No characters in this project yet.</p>
+              ) : (
+                <div className="character-picker">
+                  <select
+                    value={activeCharacter?.id ?? ''}
+                    onChange={(event) => setActiveCharacterId(event.target.value)}
+                  >
+                    {characters.map((character) => (
+                      <option key={character.id} value={character.id}>
+                        {character.name} ({character.lines} line(s))
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {activeCharacter ? (
+                <div className="character-detail wide" key={activeCharacter.id}>
+                  <label className="field">
+                    <span className="muted">ID (pushed by Dialogic)</span>
+                    <input
+                      defaultValue={activeCharacter.id}
+                      key={`id-${activeCharacter.id}`}
+                      onBlur={(event) => {
+                        const next = event.target.value.trim()
+                        if (next && next !== activeCharacter.id) {
+                          void updateCharacter(activeCharacter.id, { id: next })
+                        }
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span className="muted">Display name</span>
+                    <input
+                      defaultValue={activeCharacter.name}
+                      key={`name-${activeCharacter.id}`}
+                      onBlur={(event) => {
+                        const next = event.target.value.trim()
+                        if (next && next !== activeCharacter.name) {
+                          void updateCharacter(activeCharacter.id, { name: next })
+                        }
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span className="muted">Provider</span>
+                    <select
+                      value={activeCharacter.provider ?? providers[0]?.id ?? ''}
+                      onChange={(event) => {
+                        const next = providers.find(
+                          (provider) => provider.id === event.target.value
+                        )
+                        const voice = next?.voices[0]
+                        if (next && voice) {
+                          void saveCharacterVoice(activeCharacter.id, next.id, voice.id)
+                        }
+                      }}
+                    >
+                      {providers.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="muted">Voice</span>
+                    <select
+                      value={activeCharacter.voice ?? ''}
+                      onChange={(event) => {
+                        const provider =
+                          providers.find((item) => item.id === activeCharacter.provider) ??
+                          providers[0]
+                        if (provider) {
+                          void saveCharacterVoice(
+                            activeCharacter.id,
+                            provider.id,
+                            event.target.value
+                          )
+                        }
+                      }}
+                    >
+                      {(
+                        providers.find(
+                          (provider) => provider.id === activeCharacter.provider
+                        )?.voices ??
+                        providers[0]?.voices ??
+                        []
+                      ).map((voice) => (
+                        <option key={voice.id} value={voice.id}>
+                          {voice.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="slot-actions">
+                    <button
+                      className="button small"
+                      type="button"
+                      onClick={() => void resetCharacterVoice(activeCharacter.id)}
+                    >
+                      Reset voice
+                    </button>
+                    <button
+                      className="button small"
+                      type="button"
+                      onClick={() => void deleteCharacter(activeCharacter.id)}
+                    >
+                      Delete character
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="character-new">
+                <input
+                  placeholder="id"
+                  value={newCharacterId}
+                  onChange={(event) => setNewCharacterId(event.target.value)}
+                />
+                <input
+                  placeholder="name"
+                  value={newCharacterName}
+                  onChange={(event) => setNewCharacterName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void createCharacter()
+                  }}
+                />
+                <button
+                  className="button small"
+                  type="button"
+                  disabled={!newCharacterId.trim()}
+                  onClick={() => void createCharacter()}
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+          <div className="lines-head">
+            <h2>Lines ({lines.length})</h2>
+            <div className="head-actions">
+              <button className="toggle" type="button" onClick={() => void exportAll()}>
+                Export all
+              </button>
+              <button
+                type="button"
+                className={`toggle${reorderMode ? ' on' : ''}`}
+                onClick={() => setReorderMode((enabled) => !enabled)}
+                title="Show drag handles to reorder lines"
+              >
+                Reorder
+              </button>
+            </div>
           </div>
           {lines.length === 0 ? (
             <p className="muted">No lines yet. Push voice lines from the Godot editor.</p>
@@ -478,6 +839,7 @@ export default function App() {
                     }}
                     onClick={(event) => {
                       setSelectedBlock(null)
+                      setClipInfo(null)
                       if (event.ctrlKey || event.metaKey || event.shiftKey) {
                         setSelectedLines((current) =>
                           current.includes(line.uuid)
@@ -531,6 +893,8 @@ export default function App() {
               ))}
             </ul>
           )}
+            </>
+          )}
         </section>
 
         {rightOpen ? (
@@ -538,7 +902,26 @@ export default function App() {
             <div className="splitter col" {...right.separatorProps} />
             <aside className="right" style={{ width: right.size }}>
               <div className="pane pool">
-            <h2>Blocks ({blocks.length})</h2>
+            <h2>Blocks ({visibleBlocks.length})</h2>
+            <div className="view-switch" role="group" aria-label="Block filter">
+              {(
+                [
+                  ['linked', 'Linked'],
+                  ['orphan', 'Orphans'],
+                  ['all', 'All']
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`toggle${blockView === value ? ' on' : ''}`}
+                  onClick={() => setBlockView(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             {selectedLine ? (
               <p className="muted">
                 Line selected: {(currentLine?.character_name || currentLine?.character || 'Narrator')}
@@ -550,11 +933,19 @@ export default function App() {
               <p className="muted">The pool is project wide. Select a line to create a block.</p>
             )}
 
-            {blocks.length === 0 ? (
-              <p className="muted">No blocks yet.</p>
+            {visibleBlocks.length === 0 ? (
+              <p className="muted">
+                {blockView === 'linked'
+                  ? selectedLine
+                    ? 'No blocks linked to this line.'
+                    : 'Select a line to see the blocks linked to it.'
+                  : blockView === 'orphan'
+                    ? 'No orphan blocks.'
+                    : 'No blocks yet.'}
+              </p>
             ) : (
               <ul className="block-list">
-                {blocks.map((block) => (
+                {visibleBlocks.map((block) => (
                   <li
                     key={block.id}
                     className={`block-card${block.id === selectedBlock ? ' selected' : ''}`}
@@ -566,14 +957,21 @@ export default function App() {
                     }}
                     onContextMenu={(event) => {
                       event.preventDefault()
-                      setBlockMenu({ x: event.clientX, y: event.clientY, blockId: block.id })
+                      setBlockMenu({
+                        x: Math.min(event.clientX, window.innerWidth - 190),
+                        y: Math.min(event.clientY, window.innerHeight - 120),
+                        blockId: block.id
+                      })
                     }}
-                    onClick={() => setSelectedBlock(block.id)}
+                    onClick={() => {
+                      setSelectedBlock(block.id)
+                      setClipInfo(null)
+                    }}
                   >
                     <span className="block-title">{block.title}</span>
                     <span className="block-meta">
                       {Object.keys(block.slots).length} slot(s) · {block.takes.length} take(s)
-                      {selectedLine && block.links.lines.includes(selectedLine) ? ' · linked' : ''}
+                      {block.links.lines.length === 0 ? ' · orphan' : ''}
                     </span>
                   </li>
                 ))}
@@ -581,62 +979,98 @@ export default function App() {
             )}
           </div>
 
-          <div className="pane inspector">
+          <div className="splitter row" {...inspector.separatorProps} />
+
+          <div className="pane inspector" style={{ height: inspector.size }}>
             <h2>Inspector</h2>
             {currentBlock ? (
               <div className="block-detail">
-                <p>
-                  <strong>{currentBlock.title}</strong>
-                </p>
-                <p className="muted">{currentBlock.text}</p>
-
-                <h3>Model slots</h3>
-                {Object.entries(currentBlock.slots).length === 0 ? (
-                  <p className="muted">No model slot yet. Add one below.</p>
-                ) : (
-                  Object.entries(currentBlock.slots).map(([key, slot]) => (
-                    <SlotEditor
-                      key={key}
-                      block={currentBlock}
-                      slotKey={key}
-                      slot={slot}
-                      onUpdated={applyBlock}
-                      onError={(message) => setError(message)}
-                    />
-                  ))
-                )}
-
-                <div className="slot-form">
-                  <select
-                    value={chosenProvider?.id ?? ''}
-                    onChange={(event) => {
-                      setNewProviderId(event.target.value)
-                      setNewModelId('')
-                    }}
+                <div className="tab-row">
+                  <button
+                    type="button"
+                    className={`tab${blockTab === 'details' ? ' on' : ''}`}
+                    onClick={() => setBlockTab('details')}
                   >
-                    {providers.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={chosenModel?.id ?? ''}
-                    onChange={(event) => setNewModelId(event.target.value)}
+                    Details
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab${blockTab === 'takes' ? ' on' : ''}`}
+                    onClick={() => setBlockTab('takes')}
                   >
-                    {(chosenProvider?.models ?? []).map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button className="button small" type="button" onClick={() => void createSlot()}>
-                    Add slot
+                    Takes ({currentBlock.takes.length})
                   </button>
                 </div>
 
-                <h3>Takes ({currentBlock.takes.length})</h3>
-                {currentBlock.takes.length === 0 ? (
+                {blockTab === 'details' ? (
+                  <>
+                    <input
+                      className="block-title-input"
+                      defaultValue={currentBlock.title}
+                      key={`title-${currentBlock.id}`}
+                      onBlur={(event) => {
+                        const next = event.target.value.trim()
+                        if (next && next !== currentBlock.title) {
+                          void updateBlockField(currentBlock.id, { title: next })
+                        }
+                      }}
+                    />
+                    <label className="field">
+                      <span className="muted">Character</span>
+                      <select
+                        value={currentBlock.character}
+                        onChange={(event) => {
+                          const character = characters.find(
+                            (item) => item.id === event.target.value
+                          )
+                          void updateBlockField(currentBlock.id, {
+                            character: event.target.value,
+                            character_name: character?.name ?? event.target.value
+                          })
+                        }}
+                      >
+                        {!characters.some((item) => item.id === currentBlock.character) ? (
+                          <option value={currentBlock.character}>
+                            {currentBlock.character || 'none'}
+                          </option>
+                        ) : null}
+                        {characters.map((character) => (
+                          <option key={character.id} value={character.id}>
+                            {character.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <p className="muted">{currentBlock.text}</p>
+
+                    <h3>Model</h3>
+                    <select
+                      className="slot-select"
+                      value={activeProvider?.id ?? ''}
+                      onChange={(event) => void selectModel(event.target.value)}
+                    >
+                      {providers.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                    {activeSlotKey && currentBlock.slots[activeSlotKey] ? (
+                      <SlotEditor
+                        key={activeSlotKey}
+                        block={currentBlock}
+                        slot={currentBlock.slots[activeSlotKey]}
+                        providerLabel={activeProvider?.label ?? activeSlotKey}
+                        voices={activeProvider?.voices ?? []}
+                        paramDefs={activeModelParams}
+                        onUpdated={applyBlock}
+                        onError={(message) => setError(message)}
+                      />
+                    ) : (
+                      <p className="muted">Selecting a model creates its slot.</p>
+                    )}
+                  </>
+                ) : currentBlock.takes.length === 0 ? (
                   <p className="muted">No takes yet. Generate one from a slot.</p>
                 ) : (
                   <ul className="take-list">
@@ -657,13 +1091,17 @@ export default function App() {
                         <span className="take-meta">
                           {take.provider}/{take.model} ·{' '}
                           {take.duration_ms ? `${(take.duration_ms / 1000).toFixed(2)}s` : '—'}
+                          {take.id === currentBlock.active_take ? ' · active' : ''}
                         </span>
                         <audio controls src={`/api/${take.asset}`} />
                         <button
                           className="button small"
                           type="button"
                           disabled={take.id === currentBlock.active_take}
-                          onClick={() => void activateTake(take.id)}
+                          onClick={() => {
+                            void activateTake(take.id)
+                            setBlockTab('details')
+                          }}
                         >
                           {take.id === currentBlock.active_take ? 'Active' : 'Use'}
                         </button>
@@ -687,22 +1125,51 @@ export default function App() {
             ) : currentLine ? (
               <div className="block-detail">
                 <p className="muted">{currentLine.dtl}</p>
-                <h3>Line text</h3>
+                <label className="field">
+                  <span className="muted">Character</span>
+                  <select
+                    value={currentLine.character}
+                    onChange={(event) =>
+                      void setLineCharacter(currentLine, event.target.value)
+                    }
+                  >
+                    {!characters.some((item) => item.id === currentLine.character) ? (
+                      <option value={currentLine.character}>
+                        {currentLine.character || 'none'}
+                      </option>
+                    ) : null}
+                    {characters.map((character) => (
+                      <option key={character.id} value={character.id}>
+                        {character.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <h3>Text</h3>
                 <textarea
                   rows={4}
                   value={lineDraft}
                   onChange={(event) => setLineDraft(event.target.value)}
+                  onBlur={() => {
+                    if (lineDraft !== currentLine.text) void saveLineText()
+                  }}
                 />
                 <div className="slot-actions">
                   <button
-                    className="button small"
+                    className="button small primary"
                     type="button"
-                    disabled={lineDraft === currentLine.text}
-                    onClick={() => void saveLineText()}
+                    disabled={currentLine.track.clips.length === 0}
+                    onClick={() => void exportLine(currentLine.uuid)}
                   >
-                    Save text
+                    Export to Godot
                   </button>
                 </div>
+                {currentLine.export_path ? (
+                  <p className="muted export-path">
+                    {currentLine.export_status === 'pending_writeback' ? 'Pending write-back' : 'Exported'}:{' '}
+                    {currentLine.export_path}
+                  </p>
+                ) : null}
                 <h3>Clips ({currentLine.track.clips.length})</h3>
               </div>
             ) : (
@@ -778,14 +1245,24 @@ export default function App() {
 
 interface SlotEditorProps {
   block: BlockDocument
-  slotKey: string
   slot: BlockSlot
+  providerLabel: string
+  voices: ProviderVoice[]
+  paramDefs: ProviderParam[]
   onUpdated: (block: BlockDocument) => void
   onError: (message: string) => void
 }
 
 /** One provider/model slot: edit its prompt, convert it, or revert the last change. */
-function SlotEditor({ block, slotKey, slot, onUpdated, onError }: SlotEditorProps) {
+function SlotEditor({
+  block,
+  slot,
+  providerLabel,
+  voices,
+  paramDefs,
+  onUpdated,
+  onError
+}: SlotEditorProps) {
   const [draft, setDraft] = useState(slot.prompt)
   const [busy, setBusy] = useState(false)
 
@@ -811,30 +1288,112 @@ function SlotEditor({ block, slotKey, slot, onUpdated, onError }: SlotEditorProp
   return (
     <div className="slot-card">
       <div className="slot-head">
-        <strong>{slotKey}</strong>
-        {block.active_slot === slotKey ? <span className="tag">active</span> : null}
+        <strong>{providerLabel}</strong>
       </div>
       <textarea
-        rows={3}
+        rows={4}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        disabled={busy}
-      />
-      <div className="slot-actions">
-        <button
-          className="button small"
-          type="button"
-          disabled={busy || draft === slot.prompt}
-          onClick={() =>
+        onBlur={() => {
+          if (draft !== slot.prompt && !busy) {
             void run(() =>
               sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
                 prompt: draft
               })
             )
           }
-        >
-          Save prompt
-        </button>
+        }}
+        disabled={busy}
+      />
+      {voices.length > 0 ? (
+        <div className="param">
+          <span className="muted">Voice</span>
+          <div className="param-row">
+            <select
+              value={slot.voice ?? ''}
+              disabled={busy}
+              onChange={(event) => {
+                const value = event.target.value
+                void run(() =>
+                  sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                    voice: value
+                  })
+                )
+              }}
+            >
+              <option value="">(character default)</option>
+              {voices.map((voice) => (
+                <option key={voice.id} value={voice.id}>
+                  {voice.label}
+                </option>
+              ))}
+            </select>
+            <button
+              className="revert"
+              type="button"
+              title="Reset to the character mapping"
+              disabled={busy || !slot.voice}
+              onClick={() =>
+                void run(() =>
+                  sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                    voice: ''
+                  })
+                )
+              }
+            >
+              ↺
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {paramDefs.length > 0 ? (
+        <div className="param-grid">
+          {paramDefs.map((param) => {
+            const value = slot.params[param.id] ?? param.default
+            return (
+              <div key={param.id} className="param">
+                <span className="muted">{param.label}</span>
+                <div className="param-row">
+                <input
+                  type={param.type === 'number' ? 'number' : 'text'}
+                  defaultValue={value === null || value === undefined ? '' : String(value)}
+                  min={param.minimum ?? undefined}
+                  max={param.maximum ?? undefined}
+                  step={param.step ?? undefined}
+                  disabled={busy}
+                  onBlur={(event) => {
+                    const parsed =
+                      param.type === 'number' ? Number(event.target.value) : event.target.value
+                    if (parsed === value) return
+                    void run(() =>
+                      sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                        params: { ...slot.params, [param.id]: parsed }
+                      })
+                    )
+                  }}
+                />
+                <button
+                  className="revert"
+                  type="button"
+                  title={`Reset to ${String(param.default)}`}
+                  disabled={busy || value === param.default}
+                  onClick={() =>
+                    void run(() =>
+                      sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                        params: { ...slot.params, [param.id]: param.default }
+                      })
+                    )
+                  }
+                >
+                  ↺
+                </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+      <div className="slot-actions">
         <button
           className="button small"
           type="button"
@@ -844,16 +1403,6 @@ function SlotEditor({ block, slotKey, slot, onUpdated, onError }: SlotEditorProp
           }
         >
           Convert for this model
-        </button>
-        <button
-          className="button small"
-          type="button"
-          disabled={busy || slot.history.length === 0}
-          onClick={() =>
-            void run(() => sendJson<BlockDocument>('POST', `/blocks/${block.id}/slots/revert${query}`))
-          }
-        >
-          Revert
         </button>
         <button
           className="button small primary"

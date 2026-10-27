@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { apiJson, sendJson } from './lib/api'
 import { useClipsPlayback } from './lib/use-clips-playback'
 import { drawClipWave, useTakeAudio } from './lib/use-take-audio'
@@ -36,13 +36,16 @@ interface SectionWorkbenchProps {
 }
 
 interface ClipDrag {
-  lane: number
-  clipId: string
+  primary: string
   mode: 'move' | 'in' | 'out'
   startX: number
   startY: number
-  original: WorkspaceClip
+  originals: Array<{ clip: WorkspaceClip; lane: number }>
   moved: boolean
+  /** Movement below this many pixels counts as a click, not a drag. */
+  pastThreshold: boolean
+  /** When set, a click without dragging collapses the selection to this clip. */
+  collapseTo: string | null
   before: WorkspaceTrack[]
 }
 
@@ -117,6 +120,8 @@ export default function SectionWorkbench({
 }: SectionWorkbenchProps) {
   const [tracks, setTracks] = useState<WorkspaceTrack[]>([])
   const [selectedClip, setSelectedClip] = useState<string | null>(null)
+  const [selectedClips, setSelectedClips] = useState<string[]>([])
+  const [snapEnabled, setSnapEnabled] = useState(true)
   const [selectedLane, setSelectedLane] = useState<number | null>(null)
   const [zoom, setZoom] = useState(80)
   const [tool, setTool] = useState<Tool>('select')
@@ -129,6 +134,11 @@ export default function SectionWorkbench({
   const [canRedo, setCanRedo] = useState(false)
 
   const canvas = useRef<HTMLCanvasElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+  const pendingScrollRef = useRef<number | null>(null)
+  const headsRef = useRef<HTMLDivElement>(null)
   const ruler = useRef<HTMLCanvasElement>(null)
   const drag = useRef<ClipDrag | null>(null)
   const saving = useRef<Promise<void>>(Promise.resolve())
@@ -171,8 +181,12 @@ export default function SectionWorkbench({
     setCanRedo(history.current.index < history.current.stack.length - 1)
   }
 
+  /** Push a completed state; identical states never create an extra step. */
   const pushHistory = (snapshot: WorkspaceTrack[]): void => {
     const { stack, index } = history.current
+    const current = stack[index]
+    if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return
+
     const trimmed = stack.slice(0, index + 1)
     trimmed.push(clone(snapshot))
     if (trimmed.length > HISTORY_LIMIT) trimmed.shift()
@@ -193,15 +207,21 @@ export default function SectionWorkbench({
       .catch((caught) => setError(toMessage(caught)))
   }
 
+  const applyTracks = (next: WorkspaceTrack[]): void => {
+    tracksRef.current = next
+    setTracks(next)
+  }
+
   const commit = (
     next: WorkspaceTrack[],
     nextSelected: string | null = selectedClip,
     recordHistory = true
   ): void => {
-    if (recordHistory) pushHistory(tracksRef.current)
-    setTracks(next)
+    applyTracks(next)
     setSelectedClip(nextSelected)
     setError(null)
+    // The stack holds states, so the new one becomes the current entry.
+    if (recordHistory) pushHistory(next)
     saveWorkspace(next, nextSelected)
   }
 
@@ -211,7 +231,7 @@ export default function SectionWorkbench({
     const next = clone(stack[index - 1])
     history.current = { stack, index: index - 1 }
     syncHistoryFlags()
-    setTracks(next)
+    applyTracks(next)
     saveWorkspace(next, selectedClip)
   }
 
@@ -221,9 +241,46 @@ export default function SectionWorkbench({
     const next = clone(stack[index + 1])
     history.current = { stack, index: index + 1 }
     syncHistoryFlags()
-    setTracks(next)
+    applyTracks(next)
     saveWorkspace(next, selectedClip)
   }
+
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+
+  // Wheel zooms the timeline around the pointer, like a DAW.
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+
+    const onWheel = (event: WheelEvent): void => {
+      // Modifiers keep native behaviour (Shift + wheel scrolls horizontally).
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      event.preventDefault()
+      const current = zoomRef.current
+      const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2
+      const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(current * factor)))
+      if (next === current) return
+
+      const rect = element.getBoundingClientRect()
+      const pointerX = event.clientX - rect.left + element.scrollLeft
+      const atMs = (pointerX / current) * 1000
+      // Apply the scroll offset in the same commit as the new zoom, otherwise the
+      // layout paints once at the old offset and the view visibly jumps.
+      pendingScrollRef.current = Math.max(0, (atMs / 1000) * next - (event.clientX - rect.left))
+      setZoom(next)
+    }
+
+    element.addEventListener('wheel', onWheel, { passive: false })
+    return () => element.removeEventListener('wheel', onWheel)
+  }, [])
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current
+    if (pending === null) return
+    pendingScrollRef.current = null
+    if (scrollRef.current) scrollRef.current.scrollLeft = pending
+  }, [zoom])
 
   useEffect(() => {
     let alive = true
@@ -235,7 +292,7 @@ export default function SectionWorkbench({
         )
         if (!alive) return
         const loaded = state?.tracks ?? []
-        setTracks(loaded)
+        applyTracks(loaded)
         setSelectedClip(state?.selected_clip ?? null)
         history.current = { stack: [clone(loaded)], index: 0 }
         syncHistoryFlags()
@@ -424,8 +481,7 @@ export default function SectionWorkbench({
   }
 
   const beginClipDrag = (
-    event: React.PointerEvent<HTMLElement>,
-    lane: number,
+    event: React.PointerEvent<HTMLElement>,_lane: number,
     clip: WorkspaceClip,
     mode: ClipDrag['mode']
   ): void => {
@@ -434,37 +490,80 @@ export default function SectionWorkbench({
     event.preventDefault()
     event.stopPropagation()
     setMenu(null)
+
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey
+    let selection = selectedClips
+    let collapseTo: string | null = null
+    if (additive) {
+      selection = selectedClips.includes(clip.id)
+        ? selectedClips.filter((id) => id !== clip.id)
+        : [...selectedClips, clip.id]
+      setSelectedClips(selection)
+      if (!selection.includes(clip.id)) return
+    } else if (!selection.includes(clip.id)) {
+      selection = [clip.id]
+      setSelectedClips(selection)
+    } else {
+      // Keep the multi-selection alive for a drag; a plain click collapses it.
+      collapseTo = clip.id
+    }
+
+    setSelectedClip(clip.id)
+    onClipSelected(clip)
+
+    const movingIds = mode === 'move' ? selection : [clip.id]
+    const originals: Array<{ clip: WorkspaceClip; lane: number }> = []
+    tracksRef.current.forEach((track, index) => {
+      for (const item of track.clips) {
+        if (movingIds.includes(item.id)) originals.push({ clip: item, lane: index })
+      }
+    })
+
     drag.current = {
-      lane,
-      clipId: clip.id,
+      primary: clip.id,
       mode,
       startX: event.clientX,
       startY: event.clientY,
-      original: clip,
+      originals,
       moved: false,
+      pastThreshold: false,
+      collapseTo,
       before: clone(tracksRef.current)
     }
-    setSelectedClip(clip.id)
-    onClipSelected(clip)
-    event.currentTarget.setPointerCapture(event.pointerId)
+    const move = (native: PointerEvent): void => moveClipDrag(native)
+    const up = (native: PointerEvent): void => {
+      endClipDrag(native)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
   }
 
-  const moveClipDrag = (event: React.PointerEvent<HTMLElement>): void => {
+  const moveClipDrag = (event: { clientX: number; clientY: number }): void => {
     const active = drag.current
     if (!active) return
+
+    // Dead zone: a few pixels of jitter on click must not move the clip.
+    if (!active.pastThreshold) {
+      const dx = Math.abs(event.clientX - active.startX)
+      const dy = Math.abs(event.clientY - active.startY)
+      if (dx < 4 && dy < 4) return
+      active.pastThreshold = true
+    }
+
     const deltaMs = Math.round(((event.clientX - active.startX) / zoom) * 1000)
     const laneShift = Math.round((event.clientY - active.startY) / (LANE_HEIGHT + LANE_GAP))
-    // Always resolve against the lane the drag started on, never the last target.
-    const fromLane = active.lane
-    const targetLane = Math.max(0, Math.min(tracksRef.current.length - 1, fromLane + laneShift))
-    if (deltaMs !== 0 || targetLane !== fromLane) active.moved = true
-    active.lane = targetLane
+    if (deltaMs !== 0 || laneShift !== 0) active.moved = true
 
-    const original = active.original
-    const updated: WorkspaceClip =
-      active.mode === 'move'
-        ? { ...original, start_ms: Math.max(0, original.start_ms + deltaMs) }
-        : active.mode === 'in'
+    if (active.mode !== 'move') {
+      const entry = active.originals[0]
+      if (!entry) return
+      const original = entry.clip
+      const updated: WorkspaceClip =
+        active.mode === 'in'
           ? (() => {
               // Trimming the head moves the clip and the in point together, so
               // the remaining audio stays at the same place on the timeline.
@@ -485,51 +584,90 @@ export default function SectionWorkbench({
                 Math.min(sourceDuration(original), original.out_ms + deltaMs)
               )
             }
-
-    setTracks((current) => {
-      if (targetLane === fromLane) {
-        return current.map((track, index) =>
-          index === active.lane
+      applyTracks(
+        tracksRef.current.map((track, index) =>
+          index === entry.lane
             ? {
                 ...track,
-                clips: track.clips.map((clip) =>
-                  clip.id === active.clipId ? updated : clip
-                )
+                clips: track.clips.map((clip) => (clip.id === original.id ? updated : clip))
               }
             : track
         )
+      )
+      return
+    }
+
+    // Snap the group by its primary clip's edges, then move everything together.
+    let effectiveDelta = deltaMs
+    if (snapEnabled) {
+      const primary = active.originals.find((entry) => entry.clip.id === active.primary)
+      if (primary) {
+        const excluded = new Set(active.originals.map((entry) => entry.clip.id))
+        effectiveDelta = snapDelta(primary.clip, deltaMs, excluded)
       }
-      const without = current.map((track, index) =>
-        index === fromLane
-          ? { ...track, clips: track.clips.filter((clip) => clip.id !== active.clipId) }
-          : track
-      )
-      return without.map((track, index) =>
-        index === targetLane ? { ...track, clips: [...track.clips, updated] } : track
-      )
-    })
+    }
+
+    // Multi-clip move: pull every selected clip out, then place them all back.
+    const moving = new Set(active.originals.map((entry) => entry.clip.id))
+    const next = tracksRef.current.map((track) => ({
+      ...track,
+      clips: track.clips.filter((clip) => !moving.has(clip.id))
+    }))
+    for (const entry of active.originals) {
+      const targetLane = Math.max(0, Math.min(next.length - 1, entry.lane + laneShift))
+      const moved: WorkspaceClip = {
+        ...entry.clip,
+        start_ms: Math.max(0, entry.clip.start_ms + effectiveDelta)
+      }
+      next[targetLane] = {
+        ...next[targetLane],
+        clips: [...next[targetLane].clips, moved]
+      }
+    }
+    applyTracks(next)
   }
 
-  const endClipDrag = (event: React.PointerEvent<HTMLElement>): void => {
+  /** Pull a moved edge onto the nearest edge of any other clip. */
+  const snapDelta = (clip: WorkspaceClip, deltaMs: number, excluded: Set<string>): number => {
+    const threshold = (8 / zoom) * 1000
+    const proposedStart = clip.start_ms + deltaMs
+    const proposedEnd = proposedStart + clipLength(clip)
+    let best: number | null = null
+
+    for (const other of allClips) {
+      if (excluded.has(other.id)) continue
+      for (const edge of [other.start_ms, other.start_ms + clipLength(other)]) {
+        for (const candidate of [proposedStart, proposedEnd]) {
+          const diff = edge - candidate
+          if (Math.abs(diff) <= threshold && (best === null || Math.abs(diff) < Math.abs(best))) {
+            best = diff
+          }
+        }
+      }
+    }
+    return best === null ? deltaMs : deltaMs + best
+  }
+
+  const endClipDrag = (_event: { clientX: number; clientY: number }): void => {
     const active = drag.current
     if (!active) return
     drag.current = null
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
     if (active.moved) {
-      // The pre-drag snapshot is the undo target; the live state is the result.
-      pushHistory(active.before)
-      saveWorkspace(tracksRef.current, active.clipId)
+      pushHistory(tracksRef.current)
+      saveWorkspace(tracksRef.current, active.primary)
       const moved = tracksRef.current
         .flatMap((track) => track.clips)
-        .find((clip) => clip.id === active.clipId)
+        .find((clip) => clip.id === active.primary)
       if (moved) onClipSelected(moved)
-    } else {
-      setSelectedClip(active.clipId)
+      return
     }
-  }
 
+    // A click without a drag collapses a multi-selection to the clicked clip.
+    if (active.collapseTo) {
+      setSelectedClips([active.collapseTo])
+    }
+    setSelectedClip(active.primary)
+  }
   const razorAt = (event: React.MouseEvent<HTMLElement>, clip: WorkspaceClip): void => {
     event.stopPropagation()
     const box = event.currentTarget.getBoundingClientRect()
@@ -609,6 +747,16 @@ export default function SectionWorkbench({
         armed: false
       }
     ])
+  }
+
+  /** The in/out range becomes the span of every selected clip. */
+  const setInOutToSelection = (fallbackId: string): void => {
+    const ids = selectedClips.includes(fallbackId) ? selectedClips : [fallbackId]
+    const chosen = allClips.filter((clip) => ids.includes(clip.id))
+    if (chosen.length === 0) return
+    const start = Math.min(...chosen.map((clip) => clip.start_ms))
+    const end = Math.max(...chosen.map((clip) => clip.start_ms + clipLength(clip)))
+    setRange({ in: start, out: end })
   }
 
   const setIn = (): void => {
@@ -788,8 +936,13 @@ export default function SectionWorkbench({
 
       if (event.code === 'Space') {
         event.preventDefault()
-        if (playing) stop()
-        else void play(playheadRef.current)
+        if (recording) {
+          stopRecording()
+        } else if (playing) {
+          stop()
+        } else {
+          void play(playheadRef.current)
+        }
         return
       }
       if (event.key.toLowerCase() === 'r') {
@@ -836,7 +989,7 @@ export default function SectionWorkbench({
     : undefined
 
   return (
-    <div className="editor">
+    <div className={`editor tool-${tool}`}>
       <div className="workspace-toolbar">
         <div className="tool-group">
           <button
@@ -958,6 +1111,15 @@ export default function SectionWorkbench({
               : 'Insert into line'}
         </button>
 
+        <button
+          type="button"
+          className={`toggle${snapEnabled ? ' on' : ''}`}
+          title="Snap dragged clips to nearby clip edges"
+          onClick={() => setSnapEnabled((value) => !value)}
+        >
+          Snap
+        </button>
+
         <div className="zoom">
           <button
             className="button small"
@@ -984,6 +1146,7 @@ export default function SectionWorkbench({
 
       <div className="editor-main">
         <div className="editor-heads">
+          <div className="editor-heads-inner" ref={headsRef}>
           <div className="ruler-corner" style={{ height: RULER_HEIGHT }} />
           {tracks.map((track, index) => (
             <div className="editor-head" key={track.id} style={{ height: LANE_HEIGHT }}>
@@ -1043,12 +1206,56 @@ export default function SectionWorkbench({
               </div>
             </div>
           ))}
+          </div>
         </div>
 
-        <div className="editor-scroll">
+        <div
+          ref={scrollRef}
+          className="editor-scroll"
+          onScroll={(event) => {
+            if (headsRef.current) {
+              headsRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`
+            }
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 1) return
+            event.preventDefault()
+            panRef.current = {
+              x: event.clientX,
+              y: event.clientY,
+              left: event.currentTarget.scrollLeft,
+              top: event.currentTarget.scrollTop
+            }
+            try {
+              event.currentTarget.setPointerCapture(event.pointerId)
+            } catch {
+              // Synthetic pointers have no capture support.
+            }
+          }}
+          onPointerMove={(event) => {
+            const pan = panRef.current
+            if (!pan) return
+            event.currentTarget.scrollLeft = Math.max(0, pan.left - (event.clientX - pan.x))
+            event.currentTarget.scrollTop = Math.max(0, pan.top - (event.clientY - pan.y))
+          }}
+          onPointerUp={(event) => {
+            if (!panRef.current) return
+            panRef.current = null
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }
+          }}
+        >
           <div
+            ref={contentRef}
             className="editor-content"
             style={{ width, height: contentHeight }}
+            onPointerDown={(event) => {
+              if ((event.target as HTMLElement).closest('.lane-clip')) return
+              setSelectedClips([])
+              setSelectedClip(null)
+              onClipSelected(null)
+            }}
             onDragOver={(event) => {
               if (
                 event.dataTransfer.types.includes('application/x-dvp-take') ||
@@ -1075,7 +1282,7 @@ export default function SectionWorkbench({
               track.clips.map((clip) => (
                 <div
                   key={clip.id}
-                  className={`lane-clip${clip.id === selectedClip ? ' selected' : ''}${
+                  className={`lane-clip${selectedClips.includes(clip.id) ? ' selected' : ''}${
                     track.muted ? ' muted' : ''
                   }`}
                   style={{
@@ -1085,22 +1292,24 @@ export default function SectionWorkbench({
                     height: LANE_HEIGHT - 4
                   }}
                   onPointerDown={(event) => beginClipDrag(event, lane, clip, 'move')}
-                  onPointerMove={moveClipDrag}
-                  onPointerUp={endClipDrag}
-                  onPointerCancel={endClipDrag}
                   onClick={(event) => {
                     if (tool === 'razor') razorAt(event, clip)
                   }}
                   onContextMenu={(event) => {
                     event.preventDefault()
-                    setMenu({ x: event.clientX, y: event.clientY, lane, clipId: clip.id })
+                    const width = 190
+                    const height = 170
+                    setMenu({
+                      x: Math.min(event.clientX, window.innerWidth - width),
+                      y: Math.min(event.clientY, window.innerHeight - height),
+                      lane,
+                      clipId: clip.id
+                    })
                   }}
                 >
                   <span
                     className="clip-grip left"
                     onPointerDown={(event) => beginClipDrag(event, lane, clip, 'in')}
-                    onPointerMove={moveClipDrag}
-                    onPointerUp={endClipDrag}
                   />
                   <span className="clip-name">{clip.name}</span>
                   <button
@@ -1114,8 +1323,6 @@ export default function SectionWorkbench({
                   <span
                     className="clip-grip right"
                     onPointerDown={(event) => beginClipDrag(event, lane, clip, 'out')}
-                    onPointerMove={moveClipDrag}
-                    onPointerUp={endClipDrag}
                   />
                 </div>
               ))
@@ -1153,31 +1360,21 @@ export default function SectionWorkbench({
           <button
             type="button"
             onClick={() => {
-              setSelectedClip(menu.clipId)
-              setIn()
+              setInOutToSelection(menu.clipId)
               setMenu(null)
             }}
           >
-            Set in here
+            In/out to selection
           </button>
           <button
             type="button"
             onClick={() => {
               setSelectedClip(menu.clipId)
-              setOut()
+              setSelectedClips([menu.clipId])
               setMenu(null)
             }}
           >
-            Set out here
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedClip(menu.clipId)
-              setMenu(null)
-            }}
-          >
-            Select
+            Select only this
           </button>
         </div>
       ) : null}

@@ -155,6 +155,68 @@ def reorder_lines(root: Path, uuids: list[str]) -> ProjectSettings:
     return settings
 
 
+def save_project(root: Path, settings: ProjectSettings) -> ProjectSettings:
+    """Persist project settings and stamp the modification time."""
+    root = root.expanduser().resolve()
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def set_character_voice(
+    root: Path,
+    character: str,
+    provider: str,
+    voice: str,
+) -> ProjectSettings:
+    """Remember which voice a character speaks with on one provider."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+
+    # Drop stale mappings so a character always resolves to exactly one voice.
+    for existing in settings.providers.values():
+        if isinstance(existing, dict) and isinstance(existing.get("voices"), dict):
+            existing["voices"].pop(character, None)
+
+    entry = settings.providers.setdefault(provider, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        settings.providers[provider] = entry
+    voices = entry.setdefault("voices", {})
+    if not isinstance(voices, dict):
+        voices = {}
+        entry["voices"] = voices
+    voices[character] = voice
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def get_character_voice(settings: ProjectSettings, character: str, provider: str) -> str | None:
+    """Return the mapped voice, or None when the character is unmapped."""
+    entry = settings.providers.get(provider)
+    if not isinstance(entry, dict):
+        return None
+    voices = entry.get("voices")
+    if not isinstance(voices, dict):
+        return None
+    value = voices.get(character)
+    return value if isinstance(value, str) else None
+
+
+def find_character_voice(
+    settings: ProjectSettings, character: str
+) -> tuple[str | None, str | None]:
+    """Return the first (provider, voice) pair configured for a character."""
+    for provider, entry in settings.providers.items():
+        if not isinstance(entry, dict):
+            continue
+        voices = entry.get("voices")
+        if isinstance(voices, dict) and isinstance(voices.get(character), str):
+            return provider, voices[character]
+    return None, None
+
+
 def active_project() -> tuple[Path, ProjectSettings] | None:
     """Return the active project and its settings, or None when nothing is active."""
     from .state import get_active_project

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .providers.registry import get_provider
 from .schemas import BlockDocument
-from .storage import add_take, load_block, slot_key
+from .storage import add_take, get_character_voice, load_block, load_project, slot_key
 
 
 def generate_take(root: Path, block_id: str, provider_id: str, model: str) -> BlockDocument:
@@ -20,7 +20,19 @@ def generate_take(root: Path, block_id: str, provider_id: str, model: str) -> Bl
         raise KeyError(f"Unknown slot: {key}")
 
     provider = get_provider(provider_id)
-    result = provider.synthesize(model, slot.prompt, slot.params)
+    # A slot-level voice wins; otherwise the character mapping applies.
+    voice = slot.voice
+    if provider.voices and not voice:
+        settings = load_project(root)
+        voice = get_character_voice(settings, block.character, provider_id)
+    if provider.voices and not voice:
+        raise ValueError(
+            f"Character '{block.character or 'unknown'}' has no voice on "
+            f"provider '{provider_id}'. Pick a voice in the model slot or in the "
+            f"characters panel."
+        )
+
+    result = provider.synthesize(model, slot.prompt, slot.params, voice)
 
     take_id = uuid.uuid4().hex[:12]
     relative = f"media/takes/{block.id}_{take_id}.{result.extension}"

@@ -3,17 +3,22 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from .export import export_line as export_line_file
 from .generation import generate_take
-from .providers.registry import provider_infos
+from .providers.registry import get_provider, provider_infos
 from .schemas import (
     ActiveProject,
     AddTakeRequest,
     AssetInfo,
     BlockDocument,
+    CharacterInfo,
     CreateBlockRequest,
+    CreateCharacterRequest,
     CreateProjectRequest,
     CreateSectionRequest,
     EnsureSlotRequest,
+    ExportLineRequest,
+    ExportResult,
     GenerateRequest,
     HealthResponse,
     LineDocument,
@@ -23,8 +28,10 @@ from .schemas import (
     PushLinesRequest,
     PushLinesResult,
     Section,
+    SetCharacterVoiceRequest,
     Track,
     UpdateBlockRequest,
+    UpdateCharacterRequest,
     UpdateLineRequest,
     UpdateSettingsRequest,
     UpdateSectionRequest,
@@ -40,10 +47,12 @@ from .storage import (
     create_project,
     create_section,
     delete_block,
+    find_character_voice,
     delete_take,
     ensure_section,
     ensure_slot,
     get_active_project,
+    set_character_voice,
     list_assets,
     list_blocks,
     list_lines,
@@ -55,6 +64,7 @@ from .storage import (
     revert_prompt,
     save_asset,
     save_line,
+    save_project,
     save_workspace,
     set_active_project,
     slot_key,
@@ -251,6 +261,8 @@ def update_block_endpoint(block_id: str, request: UpdateBlockRequest) -> BlockDo
             request.links,
             request.active_slot,
             request.active_take,
+            request.character,
+            request.character_name,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -291,6 +303,7 @@ def update_slot_endpoint(
             slot_key(provider, model),
             request.prompt,
             request.params,
+            request.voice,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -425,6 +438,198 @@ def update_line_endpoint(line_uuid: str, request: UpdateLineRequest) -> LineDocu
 def update_settings_endpoint(request: UpdateSettingsRequest) -> ProjectSettings:
     """Update project-level preferences such as the recording countdown."""
     return update_settings(_active_root(), request.recording_countdown_ms)
+
+
+@app.post("/lines/{line_uuid}/export", response_model=ExportResult)
+def export_line_endpoint(line_uuid: str) -> ExportResult:
+    """Mix one line to a WAV next to the Godot project and remember the path."""
+    root = _active_root()
+    settings = load_project(root)
+    try:
+        line = load_line(root, line_uuid)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return ExportResult(**export_line_file(root, settings, line))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/export", response_model=list[ExportResult])
+def export_batch_endpoint(request: ExportLineRequest) -> list[ExportResult]:
+    """Render several lines; one failure is reported without aborting the rest."""
+    root = _active_root()
+    settings = load_project(root)
+    uuids = request.uuids or [line.uuid for line in list_lines(root)]
+    results: list[ExportResult] = []
+    for uuid_value in uuids:
+        try:
+            line = load_line(root, uuid_value)
+            results.append(ExportResult(**export_line_file(root, settings, line)))
+        except Exception as exc:  # noqa: BLE001 - report per line, not the batch
+            results.append(
+                ExportResult(line_uuid=uuid_value, ok=False, error=str(exc))
+            )
+    return results
+
+
+@app.get("/characters", response_model=list[CharacterInfo])
+def list_characters_endpoint() -> list[CharacterInfo]:
+    """List project characters; characters first seen in lines are adopted."""
+    root = _active_root()
+    settings = load_project(root)
+    counts: dict[str, int] = {}
+    adopted = False
+    for line in list_lines(root):
+        if not line.character:
+            continue
+        counts[line.character] = counts.get(line.character, 0) + 1
+        if line.character not in settings.characters:
+            settings.characters[line.character] = line.character_name or line.character
+            adopted = True
+    if adopted:
+        settings = save_project(root, settings)
+
+    return [
+        _character_info(character, {"name": name, "lines": counts.get(character, 0)}, settings)
+        for character, name in sorted(settings.characters.items())
+    ]
+
+
+@app.post("/characters", response_model=CharacterInfo, status_code=201)
+def create_character_endpoint(request: CreateCharacterRequest) -> CharacterInfo:
+    """Add a character that is not referenced by a line yet."""
+    root = _active_root()
+    settings = load_project(root)
+    if request.id in settings.characters:
+        raise HTTPException(status_code=409, detail=f"Character already exists: {request.id}")
+    settings.characters[request.id] = request.name
+    settings = save_project(root, settings)
+    return _character_info(request.id, {"name": request.name, "lines": 0}, settings)
+
+
+@app.patch("/characters/{character}", response_model=CharacterInfo)
+def rename_character_endpoint(
+    character: str, request: UpdateCharacterRequest
+) -> CharacterInfo:
+    """Rename a character, optionally moving it to a new Dialogic id.
+
+    Changing the id migrates the local lines and every provider voice mapping, so
+    the character keeps its history and voice.
+    """
+    root = _active_root()
+    settings = load_project(root)
+    if character not in settings.characters:
+        raise HTTPException(status_code=404, detail=f"Unknown character: {character}")
+
+    target = (request.id or character).strip() or character
+    if target != character:
+        if target in settings.characters:
+            raise HTTPException(status_code=409, detail=f"Character already exists: {target}")
+        settings.characters[target] = settings.characters.pop(character)
+        for entry in settings.providers.values():
+            if isinstance(entry, dict) and isinstance(entry.get("voices"), dict):
+                voices = entry["voices"]
+                if character in voices:
+                    voices[target] = voices.pop(character)
+        for line in list_lines(root):
+            if line.character == character:
+                line.character = target
+                save_line(root, line)
+
+    if request.name is not None and request.name.strip():
+        settings.characters[target] = request.name.strip()
+    else:
+        settings.characters.setdefault(target, target)
+
+    settings = save_project(root, settings)
+    lines = [line for line in list_lines(root) if line.character == target]
+    return _character_info(
+        target,
+        {"name": settings.characters[target], "lines": len(lines)},
+        settings,
+    )
+
+
+@app.delete("/characters/{character}", status_code=204)
+def delete_character_endpoint(character: str) -> None:
+    """Remove a character and its voice mappings, unless lines still use it."""
+    root = _active_root()
+    settings = load_project(root)
+    if character not in settings.characters:
+        raise HTTPException(status_code=404, detail=f"Unknown character: {character}")
+    used = [line for line in list_lines(root) if line.character == character]
+    if used:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(used)} line(s) still use character '{character}'",
+        )
+
+    del settings.characters[character]
+    for entry in settings.providers.values():
+        if isinstance(entry, dict) and isinstance(entry.get("voices"), dict):
+            entry["voices"].pop(character, None)
+    save_project(root, settings)
+
+
+def _character_info(character: str, info: dict, settings: ProjectSettings) -> CharacterInfo:
+    provider, voice = find_character_voice(settings, character)
+    label = None
+    if provider and voice:
+        try:
+            match = next(
+                (item for item in get_provider(provider).voices if item.id == voice),
+                None,
+            )
+            label = match.label if match else voice
+        except KeyError:
+            label = voice
+    return CharacterInfo(
+        id=character,
+        name=info["name"],
+        lines=info["lines"],
+        provider=provider,
+        voice=voice,
+        voice_label=label,
+    )
+
+
+@app.put("/characters/{character}/voice", response_model=CharacterInfo)
+def set_character_voice_endpoint(
+    character: str, request: SetCharacterVoiceRequest
+) -> CharacterInfo:
+    """Map one character to a voice on a provider."""
+    root = _active_root()
+    try:
+        provider = get_provider(request.provider)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if provider.voices and not any(item.id == request.voice for item in provider.voices):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown voice '{request.voice}' for provider '{request.provider}'",
+        )
+
+    settings = set_character_voice(root, character, request.provider, request.voice)
+    lines = [line for line in list_lines(root) if line.character == character]
+    name = next(
+        (line.character_name for line in lines if line.character_name),
+        character,
+    )
+    return _character_info(character, {"name": name, "lines": len(lines)}, settings)
+
+
+@app.delete("/characters/{character}/voice", status_code=204)
+def clear_character_voice_endpoint(character: str) -> None:
+    """Reset a character to the default: no voice mapped on any provider."""
+    root = _active_root()
+    settings = load_project(root)
+    if character not in settings.characters:
+        raise HTTPException(status_code=404, detail=f"Unknown character: {character}")
+    for entry in settings.providers.values():
+        if isinstance(entry, dict) and isinstance(entry.get("voices"), dict):
+            entry["voices"].pop(character, None)
+    save_project(root, settings)
 
 
 @app.put("/lines/{line_uuid}/track", response_model=LineDocument)
