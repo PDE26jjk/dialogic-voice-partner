@@ -2031,3 +2031,9 @@ h3.with-action {
   border-color: #3fb27f;
   background: rgba(63, 178, 127, 0.16);
 }
+
+/* Asset clips keep their green on the trim handles too. */
+.lane-clip.asset .clip-grip,
+.line-clip.asset .clip-grip {
+  background: rgba(63, 178, 127, 0.42);
+}
