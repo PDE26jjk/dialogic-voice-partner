@@ -81,6 +81,18 @@ function encodeWav(buffer: AudioBuffer): Blob {
   return new Blob([view.buffer], { type: 'audio/wav' })
 }
 
+/** Moving the pointer onto a timeline takes focus away from any slider. */
+function blurActiveField(): void {
+  const active = document.activeElement
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement
+  ) {
+    active.blur()
+  }
+}
+
 function toMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught)
 }
@@ -602,7 +614,12 @@ export default function LineTrack({
   }
 
   return (
-    <div className="line-track" style={{ height }} ref={rootRef}>
+    <div
+      className="line-track"
+      style={{ height }}
+      ref={rootRef}
+      onPointerDownCapture={blurActiveField}
+    >
       <div className="line-track-head">
         <button
           className="button small"

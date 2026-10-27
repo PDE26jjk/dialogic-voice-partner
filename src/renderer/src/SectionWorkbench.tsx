@@ -59,6 +59,18 @@ interface ContextMenu {
   clipId: string
 }
 
+/** Moving the pointer onto a timeline takes focus away from any slider. */
+function blurActiveField(): void {
+  const active = document.activeElement
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement
+  ) {
+    active.blur()
+  }
+}
+
 function toMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught)
 }
@@ -1139,7 +1151,11 @@ export default function SectionWorkbench({
     : undefined
 
   return (
-    <div className={`editor tool-${tool}`} ref={editorRef}>
+    <div
+      className={`editor tool-${tool}`}
+      ref={editorRef}
+      onPointerDownCapture={blurActiveField}
+    >
       <div className="workspace-toolbar">
         <div className="tool-group">
           <button
