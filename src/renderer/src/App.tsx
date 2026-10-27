@@ -74,6 +74,7 @@ export default function App() {
   const [blockTab, setBlockTab] = useState<'details' | 'takes'>('details')
   const [mainTab, setMainTab] = useState<'lines' | 'characters'>('lines')
   const [slotKey, setSlotKey] = useState<string | null>(null)
+  const [maximized, setMaximized] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -109,8 +110,9 @@ export default function App() {
     maximum: 900
   })
 
+  const bridge = window.voicepartner
+
   useEffect(() => {
-    const bridge = window.voicepartner
     if (bridge) {
       let alive = true
       void bridge.getServiceStatus().then((next) => {
@@ -179,6 +181,12 @@ export default function App() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!bridge) return
+    void bridge.isMaximized().then(setMaximized)
+    return bridge.onMaximizedChange(setMaximized)
+  }, [bridge])
 
   /** Replace one block in the pool after a write, without reloading the project. */
   const applyBlock = (updated: BlockDocument): void => {
@@ -527,13 +535,18 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${bridge ? ' desktop' : ''}`}>
       <header className="topbar">
-        <strong>Dialogic Voice Partner</strong>
-        <span className={`badge badge-${status?.state ?? 'starting'}`}>
-          {status ? STATE_LABEL[status.state] : 'Starting'}
-        </span>
-        <span className="detail">{status?.detail ?? 'Connecting…'}</span>
+        <div
+          className="titlebar-drag"
+          onDoubleClick={() => void window.voicepartner?.toggleMaximize()}
+        >
+          <strong>Dialogic Voice Partner</strong>
+          <span className={`badge badge-${status?.state ?? 'starting'}`}>
+            {status ? STATE_LABEL[status.state] : 'Starting'}
+          </span>
+          <span className="detail">{status?.detail ?? 'Connecting…'}</span>
+        </div>
 
         <div className="pane-toggles">
           <button
@@ -558,6 +571,29 @@ export default function App() {
             Workspace
           </button>
         </div>
+
+        {bridge ? (
+          <div className="window-controls">
+            <button type="button" title="Minimize" onClick={() => void bridge.minimize()}>
+              ─
+            </button>
+            <button
+              type="button"
+              title={maximized ? 'Restore' : 'Maximize'}
+              onClick={() => void bridge.toggleMaximize()}
+            >
+              {maximized ? '❐' : '□'}
+            </button>
+            <button
+              type="button"
+              className="close"
+              title="Close"
+              onClick={() => void bridge.close()}
+            >
+              ✕
+            </button>
+          </div>
+        ) : null}
       </header>
 
       <main className="layout">

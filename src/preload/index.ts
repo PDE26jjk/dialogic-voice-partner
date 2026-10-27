@@ -15,5 +15,16 @@ contextBridge.exposeInMainWorld('voicepartner', {
     }
     ipcRenderer.on('service:status', listener)
     return () => ipcRenderer.removeListener('service:status', listener)
+  },
+  minimize: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+  toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-maximize'),
+  close: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),
+  onMaximizedChange: (callback: (maximized: boolean) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, maximized: boolean): void => {
+      callback(maximized)
+    }
+    ipcRenderer.on('window:maximized', listener)
+    return () => ipcRenderer.removeListener('window:maximized', listener)
   }
 })

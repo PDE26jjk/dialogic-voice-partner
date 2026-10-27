@@ -1363,3 +1363,76 @@ h3 {
 .editor.tool-razor .lane-clip .clip-grip {
   cursor: crosshair;
 }
+
+/* --- custom title bar -------------------------------------------------- */
+
+.topbar {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.titlebar-drag {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  height: 100%;
+}
+
+.topbar .pane-toggles,
+.topbar button,
+.window-controls {
+  -webkit-app-region: no-drag;
+}
+
+.window-controls {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.window-controls button {
+  width: 34px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.window-controls button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.window-controls button.close:hover {
+  background: var(--bad);
+  color: #ffffff;
+}
+
+
+/* Desktop shell: the whole title bar is the darker strip. */
+.app.desktop .topbar {
+  height: 48px;
+  padding-right: 0;
+  background: #090b10;
+}
+
+.app.desktop .window-controls {
+  align-self: stretch;
+  display: flex;
+  align-items: stretch;
+  margin-left: 8px;
+  background: transparent;
+}
+
+.app.desktop .window-controls button {
+  width: 44px;
+  height: 100%;
+  border-radius: 0;
+}

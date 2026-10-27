@@ -110,6 +110,10 @@ function createWindow(): void {
     minHeight: 700,
     title: 'Dialogic Voice Partner',
     backgroundColor: '#12141a',
+    // The renderer draws its own title bar, so the native frame is hidden.
+    frame: false,
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 12, y: 12 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -117,6 +121,12 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  const publishMaximized = (): void => {
+    window.webContents.send('window:maximized', window.isMaximized())
+  }
+  window.on('maximize', publishMaximized)
+  window.on('unmaximize', publishMaximized)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -126,6 +136,24 @@ function createWindow(): void {
 }
 
 ipcMain.handle('service:get-status', () => status)
+
+function windowOf(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
+  return BrowserWindow.fromWebContents(event.sender)
+}
+
+ipcMain.handle('window:minimize', (event) => windowOf(event)?.minimize())
+ipcMain.handle('window:toggle-maximize', (event) => {
+  const window = windowOf(event)
+  if (!window) return false
+  if (window.isMaximized()) {
+    window.unmaximize()
+  } else {
+    window.maximize()
+  }
+  return window.isMaximized()
+})
+ipcMain.handle('window:close', (event) => windowOf(event)?.close())
+ipcMain.handle('window:is-maximized', (event) => windowOf(event)?.isMaximized() ?? false)
 
 app.whenReady().then(() => {
   createWindow()

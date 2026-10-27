@@ -10,6 +10,11 @@ export interface ServiceStatus {
 export interface VoicePartnerBridge {
   getServiceStatus(): Promise<ServiceStatus>
   onServiceStatus(callback: (status: ServiceStatus) => void): () => void
+  minimize(): Promise<void>
+  toggleMaximize(): Promise<boolean>
+  close(): Promise<void>
+  isMaximized(): Promise<boolean>
+  onMaximizedChange(callback: (maximized: boolean) => void): () => void
 }
 
 declare global {
