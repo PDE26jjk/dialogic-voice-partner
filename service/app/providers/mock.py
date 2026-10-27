@@ -31,6 +31,21 @@ class MockProvider(Provider):
     label = "Mock (local tone)"
     models = [
         ModelInfo(id="tone", label="Tone", params=[PITCH]),
+        ModelInfo(
+            id="tone-low",
+            label="Low tone",
+            params=[
+                ModelParam(
+                    id="pitch",
+                    label="Pitch",
+                    type="number",
+                    default=0.7,
+                    minimum=0.5,
+                    maximum=2.0,
+                    step=0.05,
+                )
+            ],
+        ),
     ]
 
     voices = [
@@ -55,6 +70,7 @@ class MockProvider(Provider):
         prompt: str,
         params: dict,
         voice: str | None = None,
+        credentials: dict[str, str] | None = None,
     ) -> SynthesisResult:
         info = self.find_model(model)
         defaults = info.defaults()

@@ -67,6 +67,10 @@ class Provider(ABC):
     label: str
     models: list[ModelInfo]
     voices: list[VoiceInfo] = []
+    # "select" shows the declared voices; "text" accepts any id typed by hand.
+    voice_mode: str = "select"
+    supports_stream: bool = False
+    pcm_rate: int = 24000
 
     def compile(
         self,
@@ -86,8 +90,13 @@ class Provider(ABC):
         prompt: str,
         params: dict,
         voice: str | None = None,
+        credentials: dict[str, str] | None = None,
     ) -> SynthesisResult:
-        """Return audio for one prompt; raise on provider errors."""
+        """Return audio for one prompt; raise on provider errors.
+
+        `credentials` carries the project's stored secrets for this provider;
+        they are never logged or attached to job records.
+        """
 
     def find_model(self, model_id: str) -> ModelInfo:
         for model in self.models:

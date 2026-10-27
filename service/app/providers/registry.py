@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from ..schemas import ProviderInfo, ProviderModel, ProviderParam, ProviderVoice
 from . import Provider
+from .breezeblue import BreezeBlueProvider
 from .mock import MockProvider
 from .sapi import SapiProvider
 
 PROVIDERS: dict[str, Provider] = {
-    provider.id: provider for provider in (SapiProvider(), MockProvider())
+    provider.id: provider for provider in (SapiProvider(), BreezeBlueProvider(), MockProvider())
 }
 
 
@@ -25,6 +26,8 @@ def provider_infos() -> list[ProviderInfo]:
         ProviderInfo(
             id=provider.id,
             label=provider.label,
+            voice_mode=provider.voice_mode,
+            streaming=provider.supports_stream,
             models=[
                 ProviderModel(
                     id=model.id,

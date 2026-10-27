@@ -1,9 +1,10 @@
 """Project storage: JSON documents on disk, no database (see design D3)."""
 
 from .atomic import write_json_atomic
-from .assets import list_assets, save_asset
+from .assets import import_asset, list_assets, save_asset
 from .blocks import (
     add_take,
+    add_take_file,
     convert_slot,
     create_block,
     default_title,
@@ -29,22 +30,30 @@ from .paths import project_paths, workspace_path
 from .project import (
     activate_section,
     active_project,
+    add_character,
+    character_config,
+    clear_character_provider,
     create_project,
     create_section,
+    delete_section,
+    ensure_default_character,
     ensure_section,
-    find_character_voice,
+    get_character_params,
     get_character_voice,
     load_project,
     load_workspace,
+    remove_character,
+    rename_character,
     reorder_lines,
     reorder_sections,
     save_project,
     save_workspace,
-    set_character_voice,
+    set_character_name,
+    update_character_provider,
     update_section,
     update_settings,
 )
-from .state import get_active_project, set_active_project
+from .state import clear_active_project, get_active_project, recent_projects, set_active_project
 
 __all__ = [
     "activate_section",

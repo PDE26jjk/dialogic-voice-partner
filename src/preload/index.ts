@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('voicepartner', {
   toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-maximize'),
   close: (): Promise<void> => ipcRenderer.invoke('window:close'),
   restartService: (): Promise<void> => ipcRenderer.invoke('service:restart'),
+  pickFolder: (): Promise<string | null> => ipcRenderer.invoke('project:pick-folder'),
   isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),
   onMaximizedChange: (callback: (maximized: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, maximized: boolean): void => {

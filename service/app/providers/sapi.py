@@ -115,6 +115,7 @@ class SapiProvider(Provider):
         prompt: str,
         params: dict,
         voice: str | None = None,
+        credentials: dict[str, str] | None = None,
     ) -> SynthesisResult:
         available = [item.id for item in self.voices]
         if not available:

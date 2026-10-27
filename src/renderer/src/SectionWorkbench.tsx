@@ -32,7 +32,10 @@ interface SectionWorkbenchProps {
   countdownMs: number
   onLineSaved: (line: LineDocument) => void
   onInserted: (lineUuid: string) => void
-  onClipSelected: (clip: WorkspaceClip | null) => void
+  onClipSelected: (
+    clip: WorkspaceClip | null,
+    setGain?: (clipId: string, gain: number) => void
+  ) => void
 }
 
 interface ClipDrag {
@@ -138,6 +141,7 @@ export default function SectionWorkbench({
   const scrollRef = useRef<HTMLDivElement>(null)
   const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
   const pendingScrollRef = useRef<number | null>(null)
+  const editorRef = useRef<HTMLDivElement>(null)
   const headsRef = useRef<HTMLDivElement>(null)
   const ruler = useRef<HTMLCanvasElement>(null)
   const drag = useRef<ClipDrag | null>(null)
@@ -472,12 +476,23 @@ export default function SectionWorkbench({
       source,
       start_ms: Math.max(0, Math.round(startMs)),
       in_ms: 0,
-      out_ms: sourceMs
+      out_ms: sourceMs,
+      gain: 1
     }
     const next = lanes.map((track, index) =>
       index === target ? { ...track, clips: [...track.clips, clip] } : track
     )
     commit(next, clip.id)
+  }
+
+  /** Change one clip's gain; used by the inspector slider. */
+  const setGainForClip = (clipId: string, gain: number): void => {
+    const value = Math.max(0, Math.min(4, gain))
+    const next = tracksRef.current.map((track) => ({
+      ...track,
+      clips: track.clips.map((clip) => (clip.id === clipId ? { ...clip, gain: value } : clip))
+    }))
+    commit(next, clipId)
   }
 
   const beginClipDrag = (
@@ -509,7 +524,7 @@ export default function SectionWorkbench({
     }
 
     setSelectedClip(clip.id)
-    onClipSelected(clip)
+    onClipSelected(clip, setGainForClip)
 
     const movingIds = mode === 'move' ? selection : [clip.id]
     const originals: Array<{ clip: WorkspaceClip; lane: number }> = []
@@ -812,7 +827,106 @@ export default function SectionWorkbench({
     }
   }
 
+  /** Drop an existing asset from the blocks pane onto a lane. */
+  const dropAsset = (
+    payload: string,
+    event: React.DragEvent<HTMLDivElement>
+  ): void => {
+    try {
+      const dropped = JSON.parse(payload) as { asset: string; duration_ms: number }
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const y = event.clientY - bounds.top - RULER_HEIGHT
+      const lane = Math.max(
+        0,
+        Math.min(
+          Math.max(0, tracksRef.current.length - 1),
+          Math.floor(y / (LANE_HEIGHT + LANE_GAP))
+        )
+      )
+      const start = Math.max(
+        0,
+        Math.round(((event.clientX - bounds.left) / zoom) * 1000)
+      )
+      const duration = Math.max(120, dropped.duration_ms || 2000)
+      const clip: WorkspaceClip = {
+        id: newId(),
+        name: dropped.asset.split('/').pop() ?? 'asset',
+        source: { kind: 'asset', asset: dropped.asset },
+        in_ms: 0,
+        out_ms: duration,
+        start_ms: start,
+        gain: 1
+      }
+      const next = tracksRef.current.map((track, index) =>
+        index === lane ? { ...track, clips: [...track.clips, clip] } : track
+      )
+      commit(next, clip.id)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  /** Copy dropped files into the pool and place them as asset clips. */
+  const importFiles = async (
+    files: FileList,
+    event: React.DragEvent<HTMLDivElement>
+  ): Promise<void> => {
+    setError(null)
+    try {
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const y = event.clientY - bounds.top - RULER_HEIGHT
+      const lane = Math.max(
+        0,
+        Math.min(Math.max(0, tracksRef.current.length - 1), Math.floor(y / (LANE_HEIGHT + LANE_GAP)))
+      )
+      let start = Math.max(0, Math.round(((event.clientX - bounds.left) / zoom) * 1000))
+
+      const added: WorkspaceClip[] = []
+      for (const file of Array.from(files)) {
+        const query = new URLSearchParams({ name: file.name })
+        const response = await fetch(`/api/assets/import?${query}`, {
+          method: 'POST',
+          body: await file.arrayBuffer()
+        })
+        if (!response.ok) throw new Error(`Import failed: HTTP ${response.status}`)
+        const asset = (await response.json()) as { path: string; duration_ms?: number | null }
+        const decoded = await audioContext().decodeAudioData(await file.arrayBuffer())
+        const duration = Math.max(120, Math.round(decoded.duration * 1000))
+        added.push({
+          id: newId(),
+          name: asset.path.split('/').pop() ?? file.name,
+          source: { kind: 'asset', asset: asset.path },
+          in_ms: 0,
+          out_ms: duration,
+          start_ms: start,
+          gain: 1
+        })
+        start += duration + 120
+      }
+
+      const next = tracksRef.current.map((track, index) =>
+        index === lane ? { ...track, clips: [...track.clips, ...added] } : track
+      )
+      commit(next, added[added.length - 1]?.id ?? selectedClip)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
   const dropMaterial = (event: React.DragEvent<HTMLDivElement>): void => {
+    if (event.dataTransfer.files.length > 0) {
+      event.preventDefault()
+      void importFiles(event.dataTransfer.files, event)
+      return
+    }
+
+    const assetPayload = event.dataTransfer.getData('application/x-dvp-asset')
+    if (assetPayload) {
+      event.preventDefault()
+      dropAsset(assetPayload, event)
+      return
+    }
+
     const takePayload = event.dataTransfer.getData('application/x-dvp-take')
     const blockPayload = event.dataTransfer.getData('application/x-dvp-block')
     if (!takePayload && !blockPayload) return
@@ -848,6 +962,30 @@ export default function SectionWorkbench({
       setError('That block has no take yet.')
       return
     }
+
+    // Dropping a take freezes it into an asset; dropping the block keeps the
+    // live reference so the active take still applies.
+    if (takePayload) {
+      void (async () => {
+        try {
+          const asset = await sendJson<{
+            path: string
+            duration_ms?: number | null
+          }>('POST', '/assets/from-take', { block: block.id, take: take.id })
+          addClip(
+            lane,
+            { kind: 'asset', asset: asset.path },
+            `${block.title} · ${take.provider}`,
+            startMs,
+            asset.duration_ms ?? take.duration_ms ?? 1000
+          )
+        } catch (caught) {
+          setError(toMessage(caught))
+        }
+      })()
+      return
+    }
+
     addClip(
       lane,
       { kind: 'take', block: block.id, take: take.id },
@@ -928,6 +1066,15 @@ export default function SectionWorkbench({
     }
   }
 
+  // Starting the workspace stops any line that is playing.
+  useEffect(() => {
+    const onPlay = (event: Event): void => {
+      if ((event as CustomEvent<string>).detail !== 'workspace') stop()
+    }
+    window.addEventListener('dvp:play', onPlay)
+    return () => window.removeEventListener('dvp:play', onPlay)
+  }, [stop])
+
   // Space plays from the playhead, R records into the armed lane.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -935,12 +1082,15 @@ export default function SectionWorkbench({
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
 
       if (event.code === 'Space') {
+        // Never let the browser scroll the page while the editor is open.
         event.preventDefault()
+        if (!editorRef.current?.matches(':hover')) return
         if (recording) {
           stopRecording()
         } else if (playing) {
           stop()
         } else {
+          window.dispatchEvent(new CustomEvent('dvp:play', { detail: 'workspace' }))
           void play(playheadRef.current)
         }
         return
@@ -989,7 +1139,7 @@ export default function SectionWorkbench({
     : undefined
 
   return (
-    <div className={`editor tool-${tool}`}>
+    <div className={`editor tool-${tool}`} ref={editorRef}>
       <div className="workspace-toolbar">
         <div className="tool-group">
           <button
@@ -1258,8 +1408,10 @@ export default function SectionWorkbench({
             }}
             onDragOver={(event) => {
               if (
+                event.dataTransfer.types.includes('Files') ||
                 event.dataTransfer.types.includes('application/x-dvp-take') ||
-                event.dataTransfer.types.includes('application/x-dvp-block')
+                event.dataTransfer.types.includes('application/x-dvp-block') ||
+                event.dataTransfer.types.includes('application/x-dvp-asset')
               ) {
                 event.preventDefault()
                 event.dataTransfer.dropEffect = 'copy'

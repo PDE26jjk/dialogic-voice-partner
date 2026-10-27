@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ def save_asset(
     directory = _assets_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
 
+    digest = hashlib.sha256(data).hexdigest()
     asset_id = uuid.uuid4().hex[:12]
     filename = f"{asset_id}.{extension}"
     (directory / filename).write_bytes(data)
@@ -52,7 +54,23 @@ def save_asset(
         name=name,
         path=f"media/assets/{filename}",
         duration_ms=duration_ms,
+        hash=digest,
         created_at=_now(),
     )
     write_json_atomic(directory / f"{asset_id}.json", info.model_dump(mode="json"))
     return info
+
+
+def import_asset(
+    root: Path,
+    name: str,
+    data: bytes,
+    extension: str,
+    duration_ms: int | None = None,
+) -> AssetInfo:
+    """Copy a dropped file into the pool, reusing an identical existing asset."""
+    digest = hashlib.sha256(data).hexdigest()
+    for info in list_assets(root):
+        if info.hash == digest:
+            return info
+    return save_asset(root, name, data, extension, duration_ms)

@@ -80,7 +80,10 @@ export function useClipsPlayback({
 
         const source = context.createBufferSource()
         source.buffer = buffer
-        source.connect(context.destination)
+        const gain = context.createGain()
+        gain.gain.value = clip.gain ?? 1
+        source.connect(gain)
+        gain.connect(context.destination)
         source.start(
           origin + Math.max(0, offsetOnTimeline) / 1000,
           (clip.in_ms + skip) / 1000,

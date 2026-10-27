@@ -15,8 +15,70 @@ interface LineTrackProps {
   blocks: BlockDocument[]
   countdownMs: number
   height: number
-  onResize: (height: number) => void
+  selectedClip: {
+    index: number
+    gain: number
+    in_ms: number
+    out_ms: number
+    start_ms: number
+  } | null
+  onAssetSaved?: () => void
+  onClipSelected: (
+    payload: {
+      index: number
+      gain: number
+      in_ms: number
+      out_ms: number
+      start_ms: number
+    } | null
+  ) => void
   onSaved: (line: LineDocument) => void
+}
+
+/** Encode a decoded buffer as 16-bit mono WAV, the format the service reads. */
+function encodeWav(buffer: AudioBuffer): Blob {
+  const channels = Math.min(2, buffer.numberOfChannels)
+  const frames = buffer.length
+  const bytesPerSample = 2
+  const blockAlign = channels * bytesPerSample
+  const dataSize = frames * blockAlign
+  const view = new DataView(new ArrayBuffer(44 + dataSize))
+
+  const writeText = (offset: number, value: string): void => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index))
+    }
+  }
+
+  writeText(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeText(8, 'WAVE')
+  writeText(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, channels, true)
+  view.setUint32(24, buffer.sampleRate, true)
+  view.setUint32(28, buffer.sampleRate * blockAlign, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, 16, true)
+  writeText(36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  const channelData: Float32Array[] = []
+  for (let channel = 0; channel < channels; channel += 1) {
+    channelData.push(buffer.getChannelData(channel))
+  }
+
+  let offset = 44
+  for (let frame = 0; frame < frames; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, channelData[channel][frame]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      offset += 2
+    }
+  }
+
+  return new Blob([view.buffer], { type: 'audio/wav' })
 }
 
 function toMessage(caught: unknown): string {
@@ -44,7 +106,9 @@ export default function LineTrack({
   blocks,
   countdownMs,
   height,
-  onResize,
+  selectedClip,
+  onAssetSaved,
+  onClipSelected,
   onSaved
 }: LineTrackProps) {
   const [zoom, setZoom] = useState(64)
@@ -52,11 +116,12 @@ export default function LineTrack({
   const [error, setError] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [level, setLevel] = useState(0)
-  const resizeRef = useRef<{ y: number; height: number } | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const meterFrame = useRef<number | null>(null)
   const [counting, setCounting] = useState(0)
   const [dropActive, setDropActive] = useState(false)
+  const gainTimer = useRef<number | null>(null)
 
   const canvas = useRef<HTMLCanvasElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -84,6 +149,19 @@ export default function LineTrack({
 
   const playheadRef = useRef(playhead)
   playheadRef.current = playhead
+
+  // Collapsing a line must not leave the microphone open.
+  useEffect(() => {
+    return () => {
+      recorder.current?.stream.getTracks().forEach((track) => track.stop())
+      recorder.current = null
+      analyserRef.current = null
+      if (meterFrame.current !== null) {
+        cancelAnimationFrame(meterFrame.current)
+        meterFrame.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     setPreview(null)
@@ -247,7 +325,7 @@ export default function LineTrack({
   ): Promise<void> => {
     const next: Clip[] = [
       ...clips,
-      { source, in_ms: 0, out_ms: sourceMs, start_ms: Math.max(0, Math.round(startMs)) }
+      { source, in_ms: 0, out_ms: sourceMs, start_ms: Math.max(0, Math.round(startMs)), gain: 1 }
     ]
     setPreview(next)
     await save(next)
@@ -260,16 +338,53 @@ export default function LineTrack({
       setError('That block has no take yet. Generate one first.')
       return
     }
-    await append(
-      { kind: 'take', block: block.id, take: take.id, asset: take.asset },
-      take.duration_ms ?? 1000
-    )
+    // A dropped take is frozen into an asset: later generations cannot change
+    // what this clip plays. Dropping the block keeps the live reference.
+    try {
+      const asset = await sendJson<AssetInfo>('POST', '/assets/from-take', {
+        block: block.id,
+        take: take.id
+      })
+      await append(
+        { kind: 'asset', asset: asset.path },
+        asset.duration_ms ?? take.duration_ms ?? 1000
+      )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
   }
+
+  /** Change one clip's volume and save once the slider settles. */
+  const updateGain = (index: number, value: number): void => {
+    if (!clips[index]) return
+    const next = clips.map((clip, position) =>
+      position === index ? { ...clip, gain: value } : clip
+    )
+    setPreview(next)
+    if (gainTimer.current !== null) window.clearTimeout(gainTimer.current)
+    gainTimer.current = window.setTimeout(() => {
+      gainTimer.current = null
+      void save(next)
+    }, 250)
+  }
+
+  useEffect(() => {
+    if (!selectedClip) return
+    updateGain(selectedClip.index, selectedClip.gain)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClip?.index, selectedClip?.gain])
 
   const beginDrag = (event: React.PointerEvent<HTMLElement>, index: number): void => {
     if (event.button !== 0) return
     event.preventDefault()
     event.stopPropagation()
+    onClipSelected({
+      index,
+      gain: clips[index].gain ?? 1,
+      in_ms: clips[index].in_ms,
+      out_ms: clips[index].out_ms,
+      start_ms: clips[index].start_ms
+    })
     drag.current = { index, startX: event.clientX, start: clips[index].start_ms, moved: false }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -305,6 +420,62 @@ export default function LineTrack({
     void save(next)
   }
 
+  const playSource = `line:${line.uuid}`
+
+  // Starting one timeline stops every other one.
+  useEffect(() => {
+    const onPlay = (event: Event): void => {
+      if ((event as CustomEvent<string>).detail !== playSource) stop()
+    }
+    window.addEventListener('dvp:play', onPlay)
+    return () => window.removeEventListener('dvp:play', onPlay)
+  }, [playSource, stop])
+
+  // Space plays this line only while the pointer is over it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+      if (event.code !== 'Space') return
+      // The page must never scroll while the user is driving a timeline.
+      event.preventDefault()
+      if (!rootRef.current?.matches(':hover')) return
+      if (playing) {
+        stop()
+      } else {
+        window.dispatchEvent(new CustomEvent('dvp:play', { detail: playSource }))
+        void play(playhead)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [playing, stop, play, playhead, playSource])
+
+  /** Copy a dropped file into the pool and place it at the drop position. */
+  const importFile = async (file: File, event: React.DragEvent<HTMLDivElement>): Promise<void> => {
+    setError(null)
+    try {
+      const query = new URLSearchParams({ name: file.name })
+      const response = await fetch(`/api/assets/import?${query}`, {
+        method: 'POST',
+        body: await file.arrayBuffer()
+      })
+      if (!response.ok) throw new Error(`Import failed: HTTP ${response.status}`)
+      const asset = (await response.json()) as AssetInfo
+      const box = event.currentTarget.getBoundingClientRect()
+      const start = Math.max(0, Math.round(((event.clientX - box.left) / zoom) * 1000))
+      const decoded = await audioContext().decodeAudioData(await file.arrayBuffer())
+      const duration = Math.round(decoded.duration * 1000)
+      const next: Clip[] = [
+        ...clips,
+        { source: { kind: 'asset', asset: asset.path }, in_ms: 0, out_ms: duration, start_ms: start, gain: 1 }
+      ]
+      await save(next)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
   /** Render the whole line and keep the result in the shared asset pool. */
   const saveAsAsset = async (): Promise<void> => {
     setError(null)
@@ -328,15 +499,25 @@ export default function LineTrack({
   const startRecording = async (): Promise<void> => {
     if (recording || counting > 0) return
     setError(null)
-    recordStart.current = playheadRef.current
-    const steps = Math.ceil(Math.max(0, countdownMs) / 1000)
-    for (let left = steps; left > 0; left -= 1) {
-      setCounting(left)
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-    }
-    setCounting(0)
+
+    // The countdown is pre-roll: roll the timeline back and play existing audio
+    // so the performer hears context, then start recording at the playhead.
+    const target = playheadRef.current
+    const preRoll = Math.min(Math.max(0, countdownMs), target)
+    const waitMs = Math.max(0, countdownMs - preRoll)
+    recordStart.current = target
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+      if (waitMs > 0) {
+        const steps = Math.ceil(waitMs / 1000)
+        for (let left = steps; left > 0; left -= 1) {
+          setCounting(left)
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+        setCounting(0)
+      }
       const media = new MediaRecorder(stream)
       chunks.current = []
       media.ondataavailable = (event) => {
@@ -362,11 +543,15 @@ export default function LineTrack({
         meterFrame.current = requestAnimationFrame(tick)
       }
       tick()
+      // Play back from before the playhead; recording starts when it arrives.
+      if (clips.length > 0) void play(Math.max(0, target - preRoll))
+      if (preRoll > 0) {
+        await new Promise((resolve) => setTimeout(resolve, preRoll))
+      }
+
       media.start()
       recorder.current = media
       setRecording(true)
-      // Roll the line from the playhead so the take can be recorded against it.
-      if (clips.length > 0) void play(recordStart.current)
     } catch (caught) {
       setError(`Microphone unavailable: ${toMessage(caught)}`)
     }
@@ -396,12 +581,16 @@ export default function LineTrack({
 
       const query = new URLSearchParams({
         name: `Recording ${new Date().toLocaleTimeString()}`,
-        extension: 'webm',
+        extension: 'wav',
         duration_ms: String(durationMs)
       })
-      const response = await fetch(`/api/assets?${query}`, { method: 'POST', body: blob })
+      const response = await fetch(`/api/assets?${query}`, {
+        method: 'POST',
+        body: encodeWav(buffer)
+      })
       if (!response.ok) throw new Error(`Upload failed: HTTP ${response.status}`)
       const asset = (await response.json()) as AssetInfo
+      onAssetSaved?.()
       await append(
         { kind: 'asset', asset: asset.path },
         asset.duration_ms ?? durationMs,
@@ -413,7 +602,7 @@ export default function LineTrack({
   }
 
   return (
-    <div className="line-track" style={{ height }}>
+    <div className="line-track" style={{ height }} ref={rootRef}>
       <div className="line-track-head">
         <button
           className="button small"
@@ -482,26 +671,6 @@ export default function LineTrack({
 
       {error ? <p className="error">{error}</p> : null}
 
-      <div
-        className="line-resize"
-        title="Drag to resize"
-        onPointerDown={(event) => {
-          if (event.button !== 0) return
-          resizeRef.current = { y: event.clientY, height }
-          event.currentTarget.setPointerCapture(event.pointerId)
-        }}
-        onPointerMove={(event) => {
-          const start = resizeRef.current
-          if (!start) return
-          onResize(Math.max(90, Math.min(420, start.height + (event.clientY - start.y))))
-        }}
-        onPointerUp={(event) => {
-          resizeRef.current = null
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId)
-          }
-        }}
-      />
 
       <div
         ref={scrollRef}
@@ -546,7 +715,13 @@ export default function LineTrack({
             className={`line-track-body${dropActive ? ' drop-active' : ''}`}
             style={{ top: RULER_HEIGHT, height: CANVAS_HEIGHT }}
             onDragOver={(event) => {
-              if (!event.dataTransfer.types.includes('application/x-dvp-take')) return
+              const types = event.dataTransfer.types
+              if (
+                !types.includes('application/x-dvp-take') &&
+                !types.includes('application/x-dvp-asset')
+              ) {
+                return
+              }
               event.preventDefault()
               event.dataTransfer.dropEffect = 'copy'
               setDropActive(true)
@@ -555,6 +730,39 @@ export default function LineTrack({
             onDrop={(event) => {
               event.preventDefault()
               setDropActive(false)
+              if (event.dataTransfer.files.length > 0) {
+                void importFile(event.dataTransfer.files[0], event)
+                return
+              }
+              const assetPayload = event.dataTransfer.getData('application/x-dvp-asset')
+              if (assetPayload) {
+                try {
+                  const dropped = JSON.parse(assetPayload) as {
+                    asset: string
+                    duration_ms: number
+                  }
+                  const box = event.currentTarget.getBoundingClientRect()
+                  const start = Math.max(
+                    0,
+                    Math.round(((event.clientX - box.left) / zoom) * 1000)
+                  )
+                  const duration = Math.max(120, dropped.duration_ms || 2000)
+                  void save([
+                    ...clips,
+                    {
+                      source: { kind: 'asset', asset: dropped.asset },
+                      in_ms: 0,
+                      out_ms: duration,
+                      start_ms: start,
+                      gain: 1
+                    }
+                  ])
+                } catch {
+                  setError('Could not read the dropped asset.')
+                }
+                return
+              }
+
               const raw = event.dataTransfer.getData('application/x-dvp-take')
               if (!raw) return
               try {
@@ -574,7 +782,9 @@ export default function LineTrack({
             {clips.map((clip, index) => (
               <div
                 key={`${clip.source.take ?? clip.source.asset ?? 'clip'}-${index}`}
-                className="line-clip"
+                className={`line-clip ${clip.source.kind}${
+                  selectedClip?.index === index ? ' selected' : ''
+                }`}
                 style={{
                   left: (clip.start_ms / 1000) * zoom,
                   width: Math.max(6, (clipLength(clip) / 1000) * zoom)

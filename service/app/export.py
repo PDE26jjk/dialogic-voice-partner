@@ -9,12 +9,16 @@ event at it.
 from __future__ import annotations
 
 import json
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 import wave
 from array import array
 from datetime import datetime, timezone
 from pathlib import Path
+
+from imageio_ffmpeg import get_ffmpeg_exe
 
 from .schemas import BlockDocument, ExportSettings, LineDocument, ProjectSettings, SourceRef
 from .storage import load_block, save_line
@@ -27,19 +31,102 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _read_mono(path: Path, rate: int) -> array:
-    """Read a PCM WAV as mono 16-bit samples at `rate`, resampling if needed."""
-    with wave.open(str(path), "rb") as handle:
-        channels = handle.getnchannels()
-        width = handle.getsampwidth()
-        source_rate = handle.getframerate()
-        frames = handle.readframes(handle.getnframes())
+_FFMPEG: str | None = None
 
-    if width != 2:
-        raise ValueError(f"Only 16-bit WAV is supported, got {width * 8}-bit in {path.name}")
+
+def _ffmpeg_exe() -> str | None:
+    """Locate the bundled ffmpeg binary once, if the package provides one."""
+    global _FFMPEG
+    if _FFMPEG is None:
+        try:
+            _FFMPEG = get_ffmpeg_exe()
+        except Exception:  # noqa: BLE001 - treat a missing binary as "no ffmpeg"
+            _FFMPEG = ""
+    return _FFMPEG or None
+
+
+def _transcode(path: Path, rate: int) -> array:
+    """Decode any audio file through ffmpeg into mono 16-bit samples."""
+    exe = _ffmpeg_exe()
+    if exe is None:
+        raise ValueError(
+            f"{path.name} is not a WAV file and ffmpeg is unavailable"
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        subprocess.run(
+            [
+                exe,
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-ac",
+                "1",
+                "-ar",
+                str(rate),
+                "-sample_fmt",
+                "s16",
+                str(temporary),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        )
+        with wave.open(str(temporary), "rb") as decoded:
+            frames = decoded.readframes(decoded.getnframes())
+        return _decode_pcm(frames, 2, path.name)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+        raise ValueError(f"ffmpeg could not decode {path.name}: {detail}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _decode_pcm(frames: bytes, width: int, name: str) -> array:
+    """Decode 8/16/24/32-bit PCM frames into signed 16-bit samples."""
+    if width == 2:
+        samples = array("h")
+        samples.frombytes(frames)
+        return samples
 
     samples = array("h")
-    samples.frombytes(frames)
+    if width == 1:
+        # 8-bit WAV is unsigned.
+        samples.extend((byte - 128) << 8 for byte in frames)
+        return samples
+
+    if width == 3:
+        for index in range(0, len(frames) - 2, 3):
+            value = int.from_bytes(frames[index : index + 3], "little", signed=True)
+            samples.append(value >> 8)
+        return samples
+
+    if width == 4:
+        for index in range(0, len(frames) - 3, 4):
+            value = int.from_bytes(frames[index : index + 4], "little", signed=True)
+            samples.append(value >> 16)
+        return samples
+
+    raise ValueError(f"Unsupported WAV depth: {width * 8}-bit in {name}")
+
+
+def _read_mono(path: Path, rate: int) -> array:
+    """Read a PCM WAV as mono 16-bit samples at `rate`, resampling if needed."""
+    try:
+        with wave.open(str(path), "rb") as handle:
+            channels = handle.getnchannels()
+            width = handle.getsampwidth()
+            source_rate = handle.getframerate()
+            frames = handle.readframes(handle.getnframes())
+    except (wave.Error, EOFError):
+        # Anything ffmpeg can read (mp3, flac, ogg, ...) becomes 16-bit mono.
+        return _transcode(path, rate)
+
+    samples = _decode_pcm(frames, width, path.name)
     if channels > 1:
         mixed = array("h")
         for index in range(0, len(samples) - channels + 1, channels):
@@ -122,8 +209,9 @@ def _render_samples(root: Path, line: LineDocument, rate: int) -> tuple[array, i
         offset = int(clip.in_ms * rate / 1000)
         length = int((clip.out_ms - clip.in_ms) * rate / 1000)
         length = min(length, max(0, len(data) - offset), max(0, total - start))
+        gain = max(0.0, min(4.0, clip.gain))
         for index in range(length):
-            mix[start + index] += data[offset + index]
+            mix[start + index] += data[offset + index] * gain
 
     output = array("h", bytes(total * 2))
     for index in range(total):

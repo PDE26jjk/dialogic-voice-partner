@@ -18,6 +18,16 @@ export interface AddTakeRequest {
   duration_ms?: number | null
 }
 
+/** AssetFromTakeRequest */
+export interface AssetFromTakeRequest {
+  /** Block */
+  block: string
+  /** Take */
+  take: string
+  /** Name */
+  name?: string | null
+}
+
 /** An uploaded or recorded audio file in the shared pool. */
 export interface AssetInfo {
   /** Id */
@@ -28,6 +38,8 @@ export interface AssetInfo {
   path: string
   /** Duration Ms */
   duration_ms?: number | null
+  /** Content hash for duplicate checks */
+  hash?: string | null
   /** Created At */
   created_at?: string | null
 }
@@ -99,7 +111,7 @@ export interface BlockSlot {
   updated_at?: string | null
 }
 
-/** A Dialogic character seen in the project, with its current voice mapping. */
+/** A Dialogic character with its per-provider defaults. */
 export interface CharacterInfo {
   /** Id */
   id: string
@@ -107,12 +119,26 @@ export interface CharacterInfo {
   name: string
   /** Lines */
   lines: number
-  /** Provider */
-  provider?: string | null
+  /** Providers */
+  providers: Record<string, CharacterProviderSettings>
+  /** True for the built-in character that unmapped blocks fall back to */
+  is_default: boolean
+}
+
+/** What one character uses on one provider. */
+export interface CharacterProviderSettings {
   /** Voice */
   voice?: string | null
-  /** Voice Label */
-  voice_label?: string | null
+  /** Params */
+  params: Record<string, unknown>
+}
+
+/** A character's project-wide defaults for every provider. */
+export interface CharacterSettings {
+  /** Name */
+  name: string
+  /** Providers */
+  providers: Record<string, CharacterProviderSettings>
 }
 
 /** Outcome of the explicit orphan cleanup. */
@@ -134,6 +160,8 @@ export interface Clip {
   out_ms: number
   /** Position on the line timeline */
   start_ms: number
+  /** Per-clip volume applied to playback and export */
+  gain: number
 }
 
 /** CreateBlockRequest */
@@ -329,10 +357,10 @@ export interface ProjectSettings {
   export: ExportSettings
   /** Local HTTP endpoint exposed by the Godot editor plugin */
   editor_endpoint: string
-  /** Per-provider settings, including character to voice mappings */
+  /** Legacy character to voice mappings, migrated into characters */
   providers: Record<string, unknown>
-  /** Character id to display name, editable from the characters panel */
-  characters: Record<string, string>
+  /** Character id to its per-provider voice and parameters */
+  characters: Record<string, CharacterSettings>
   /** Created At */
   created_at?: string | null
   /** Updated At */
@@ -349,6 +377,10 @@ export interface ProviderInfo {
   models: Array<ProviderModel>
   /** Voices that can be mapped to characters */
   voices: Array<ProviderVoice>
+  /** 'select' shows the voice list, 'text' accepts a typed id */
+  voice_mode: string
+  /** True when the provider can stream audio while it generates */
+  streaming: boolean
 }
 
 /** ProviderModel */
@@ -467,14 +499,6 @@ export interface SelectionAssetRequest {
   name?: string | null
 }
 
-/** SetCharacterVoiceRequest */
-export interface SetCharacterVoiceRequest {
-  /** Provider */
-  provider: string
-  /** Voice */
-  voice: string
-}
-
 /** Where a clip or workspace source takes its audio from. */
 export interface SourceRef {
   /** Where the audio comes from */
@@ -524,6 +548,14 @@ export interface UpdateBlockRequest {
   character?: string | null
   /** Character Name */
   character_name?: string | null
+}
+
+/** Set or clear one provider's defaults for a character. */
+export interface UpdateCharacterProviderRequest {
+  /** Voice */
+  voice?: string | null
+  /** Params */
+  params?: Record<string, unknown> | null
 }
 
 /** UpdateCharacterRequest */
@@ -596,6 +628,8 @@ export interface WorkspaceClip {
   in_ms: number
   /** Trim end inside the source */
   out_ms: number
+  /** Per-clip volume used when previewing the workbench */
+  gain: number
 }
 
 /** Per-section workbench (`workspaces/<section_id>.json`).

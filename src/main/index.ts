@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -173,6 +173,13 @@ ipcMain.handle('window:toggle-maximize', (event) => {
 ipcMain.handle('window:close', (event) => windowOf(event)?.close())
 ipcMain.handle('window:is-maximized', (event) => windowOf(event)?.isMaximized() ?? false)
 ipcMain.handle('service:restart', () => restartService())
+ipcMain.handle('project:pick-folder', async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  const result = window
+    ? await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
+    : await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  return result.canceled ? null : (result.filePaths[0] ?? null)
+})
 
 app.whenReady().then(() => {
   createWindow()

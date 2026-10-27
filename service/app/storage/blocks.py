@@ -138,7 +138,8 @@ def create_block(
             model=model.id,
             voice=default_provider.voices[0].id if default_provider.voices else None,
             prompt=block.text,
-            params=model.defaults(),
+            # Empty on purpose: unset parameters follow the model, then the character.
+            params={},
         )
         block.active_slot = key
 
@@ -202,6 +203,26 @@ def ensure_slot(root: Path, block_id: str, provider: str, model: str) -> BlockDo
     if block.active_slot is None:
         block.active_slot = key
     return save_block(root, block)
+
+
+def add_take_file(
+    root: Path,
+    block_id: str,
+    key: str,
+    data: bytes,
+    extension: str,
+    duration_ms: int | None = None,
+) -> BlockDocument:
+    """Store a dropped file as a take, reusing identical audio."""
+    import hashlib
+
+    digest = hashlib.sha256(data).hexdigest()[:12]
+    relative = f"media/takes/{block_id}_{digest}.{extension}"
+    path = root.expanduser().resolve() / relative
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return add_take(root.expanduser().resolve(), block_id, key, relative, duration_ms)
 
 
 def update_slot(

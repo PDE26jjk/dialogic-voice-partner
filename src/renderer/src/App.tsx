@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiJson, sendJson, type HealthResponse } from './lib/api'
 import { useResizable, usePaneOpen } from './lib/use-resizable'
 import LineTrack from './LineTrack'
 import SectionWorkbench from './SectionWorkbench'
+
+type DialogState =
+  | { kind: 'create-project' }
+  | { kind: 'open-project' }
+  | { kind: 'new-section' }
+  | { kind: 'rename-section'; id: string }
+  | { kind: 'delete-section'; id: string }
+  | { kind: 'delete-take'; blockId: string; takeId: string }
+  | null
 import type {
   ActiveProject,
+  AssetInfo,
   BlockDocument,
   BlockSlot,
   CharacterInfo,
@@ -70,7 +80,7 @@ export default function App() {
     }
   })
   const [lineDraft, setLineDraft] = useState('')
-  const [lineHeights, setLineHeights] = useState<Record<string, number>>(() => {
+  const [lineHeights] = useState<Record<string, number>>(() => {
     try {
       const stored = localStorage.getItem('dvp.lineHeights')
       return stored ? (JSON.parse(stored) as Record<string, number>) : {}
@@ -79,6 +89,18 @@ export default function App() {
     }
   })
   const [clipInfo, setClipInfo] = useState<WorkspaceClip | null>(null)
+  const [inspectorFocus, setInspectorFocus] = useState<
+    'block' | 'line' | 'clip' | 'line-clip' | 'none'
+  >('none')
+  const [lineClip, setLineClip] = useState<{
+    lineUuid: string
+    index: number
+    gain: number
+    in_ms: number
+    out_ms: number
+    start_ms: number
+  } | null>(null)
+  const clipGainRef = useRef<((clipId: string, gain: number) => void) | null>(null)
   const [blockMenu, setBlockMenu] = useState<{ x: number; y: number; blockId: string } | null>(
     null
   )
@@ -98,6 +120,26 @@ export default function App() {
   const [mainTab, setMainTab] = useState<'lines' | 'characters'>('lines')
   const [slotKey, setSlotKey] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
+  const [recent, setRecent] = useState<string[]>([])
+  const [assets, setAssets] = useState<AssetInfo[]>([])
+  const [notice, setNotice] = useState<string | null>(null)
+  const [generating, setGenerating] = useState<{
+    blockId: string
+    title: string
+    cancel: () => void
+  } | null>(null)
+  const [takeMenu, setTakeMenu] = useState<{
+    x: number
+    y: number
+    blockId: string
+    takeId: string
+  } | null>(null)
+  const [dialog, setDialog] = useState<DialogState>(null)
+  const [formName, setFormName] = useState('')
+  const [formParent, setFormParent] = useState('')
+  const [formGodot, setFormGodot] = useState('')
+  const [formRoot, setFormRoot] = useState('')
+  const [dialogBusy, setDialogBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -184,22 +226,68 @@ export default function App() {
         setBlocks([])
         return
       }
-      const [items, pool, registry, roles] = await Promise.all([
-        apiJson<LineDocument[]>('/lines'),
+      const linesQuery = active.project.current_section
+        ? `?section=${encodeURIComponent(active.project.current_section)}`
+        : ''
+      const [items, pool, registry, roles, library] = await Promise.all([
+        apiJson<LineDocument[]>(`/lines${linesQuery}`),
         apiJson<BlockDocument[]>('/blocks'),
         apiJson<ProviderInfo[]>('/providers'),
-        apiJson<CharacterInfo[]>('/characters')
+        apiJson<CharacterInfo[]>('/characters'),
+        apiJson<AssetInfo[]>('/assets')
       ])
       setLines(items)
       setBlocks(pool)
       setProviders(registry)
       setCharacters(roles)
+      setAssets(library)
     } catch (caught) {
       setError(toMessage(caught))
     } finally {
       setLoading(false)
     }
   }, [])
+
+  // Space belongs to the timelines; it must never scroll or press a button.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.code !== 'Space') return
+      const target = event.target as HTMLElement | null
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+      if (target?.isContentEditable) return
+      if (!event.defaultPrevented) event.preventDefault()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [])
+
+  // The slot editor reports results through a window event.
+  useEffect(() => {
+    const onNotice = (event: Event): void => {
+      const message = (event as CustomEvent<string>).detail
+      if (message) setNotice(message)
+      window.setTimeout(() => setNotice(null), 2600)
+    }
+    window.addEventListener('dvp:notice', onNotice)
+    return () => window.removeEventListener('dvp:notice', onNotice)
+  }, [])
+
+  // Any click outside a menu closes it.
+  useEffect(() => {
+    if (!takeMenu && !blockMenu) return
+    const close = (): void => {
+      setTakeMenu(null)
+      setBlockMenu(null)
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [takeMenu, blockMenu])
+
+  useEffect(() => {
+    void apiJson<string[]>('/projects/recent')
+      .then(setRecent)
+      .catch(() => undefined)
+  }, [project?.root])
 
   useEffect(() => {
     try {
@@ -218,6 +306,12 @@ export default function App() {
   }, [expandedLines])
 
   useEffect(() => {
+    void apiJson<string[]>('/projects/recent')
+      .then(setRecent)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
     void load()
   }, [load])
 
@@ -234,21 +328,41 @@ export default function App() {
     )
   }
 
-  const saveCharacterVoice = async (
+  /** Character writes go one at a time; the service does read-modify-write. */
+  const characterQueue = useRef(Promise.resolve())
+
+  const saveCharacterProvider = (
     id: string,
     provider: string,
-    voice: string
+    patch: { voice?: string; params?: Record<string, unknown> }
   ): Promise<void> => {
+    const task = characterQueue.current.then(async () => {
+      setError(null)
+      try {
+        const updated = await sendJson<CharacterInfo>(
+          'PUT',
+          `/characters/${encodeURIComponent(id)}/providers/${encodeURIComponent(provider)}`,
+          patch
+        )
+        setCharacters((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item))
+        )
+      } catch (caught) {
+        setError(toMessage(caught))
+      }
+    })
+    characterQueue.current = task.catch(() => undefined)
+    return task
+  }
+
+  const clearCharacterProvider = async (id: string, provider: string): Promise<void> => {
     setError(null)
     try {
-      const updated = await sendJson<CharacterInfo>(
-        'PUT',
-        `/characters/${encodeURIComponent(id)}/voice`,
-        { provider, voice }
+      await sendJson(
+        'DELETE',
+        `/characters/${encodeURIComponent(id)}/providers/${encodeURIComponent(provider)}`
       )
-      setCharacters((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item))
-      )
+      await load()
     } catch (caught) {
       setError(toMessage(caught))
     }
@@ -264,6 +378,7 @@ export default function App() {
       setCharacters((current) => [...current, created])
       setNewCharacterId('')
       setNewCharacterName('')
+      setActiveCharacterId(created.id)
     } catch (caught) {
       setError(toMessage(caught))
     }
@@ -290,21 +405,12 @@ export default function App() {
     }
   }
 
-  const resetCharacterVoice = async (id: string): Promise<void> => {
-    setError(null)
-    try {
-      await sendJson('DELETE', `/characters/${encodeURIComponent(id)}/voice`)
-      await load()
-    } catch (caught) {
-      setError(toMessage(caught))
-    }
-  }
-
   const deleteCharacter = async (id: string): Promise<void> => {
     setError(null)
     try {
       await sendJson('DELETE', `/characters/${encodeURIComponent(id)}`)
       setCharacters((current) => current.filter((item) => item.id !== id))
+      if (activeCharacterId === id) setActiveCharacterId(null)
     } catch (caught) {
       setError(toMessage(caught))
     }
@@ -328,6 +434,187 @@ export default function App() {
       setProject((current) =>
         current ? { ...current, project: { ...current.project, sections: saved } } : current
       )
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  /** Electron opens a native dialog; the browser falls back to a typed path. */
+  const closeDialog = (): void => setDialog(null)
+
+  const browseFolder = async (target: 'parent' | 'godot'): Promise<void> => {
+    if (window.voicepartner?.pickFolder) {
+      const picked = await window.voicepartner.pickFolder()
+      if (!picked) return
+      if (target === 'parent') setFormParent(picked)
+      else setFormGodot(picked)
+      return
+    }
+    // A browser cannot hand out absolute paths, so the field is simply focused.
+    const inputs = document.querySelectorAll<HTMLInputElement>('.modal input')
+    inputs[target === 'parent' ? 1 : 2]?.focus()
+  }
+
+  const openCreateDialog = (): void => {
+    setFormName('')
+    setFormParent('')
+    setFormGodot(project?.project.godot_project ?? '')
+    setDialog({ kind: 'create-project' })
+  }
+
+  const openProject = async (root?: string): Promise<void> => {
+    if (!root) {
+      if (window.voicepartner?.pickFolder) {
+        const picked = await window.voicepartner.pickFolder()
+        if (!picked) return
+        root = picked
+      } else {
+        setFormRoot('')
+        setDialog({ kind: 'open-project' })
+        return
+      }
+    }
+    setError(null)
+    try {
+      await sendJson('POST', `/projects/activate?root=${encodeURIComponent(root)}`)
+      await load()
+      setRecent(await apiJson<string[]>('/projects/recent'))
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const closeProject = async (): Promise<void> => {
+    setError(null)
+    try {
+      await sendJson('POST', '/projects/close')
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  const addSection = (): void => {
+    setFormName('')
+    setDialog({ kind: 'new-section' })
+  }
+
+  const renameSection = (id: string, current: string): void => {
+    setFormName(current)
+    setDialog({ kind: 'rename-section', id })
+  }
+
+  const removeSection = (id: string): void => {
+    setDialog({ kind: 'delete-section', id })
+  }
+
+  const confirmDialog = async (): Promise<void> => {
+    if (!dialog) return
+    setDialogBusy(true)
+    setError(null)
+    try {
+      const name = formName.trim()
+      if (dialog.kind === 'create-project') {
+        if (!name || !formParent.trim() || !formGodot.trim()) return
+        const target = `${formParent.replace(/[\\/]+$/, '')}\\${name}`
+        await sendJson('POST', '/projects', {
+          root: target,
+          name,
+          godot_project: formGodot.trim()
+        })
+        await load()
+        setRecent(await apiJson<string[]>('/projects/recent'))
+      } else if (dialog.kind === 'open-project') {
+        const target = formRoot.trim()
+        if (!target) return
+        await sendJson('POST', `/projects/activate?root=${encodeURIComponent(target)}`)
+        await load()
+        setRecent(await apiJson<string[]>('/projects/recent'))
+      } else if (dialog.kind === 'new-section') {
+        if (!name) return
+        const id =
+          name
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, '-')
+            .replace(/^-+|-+$/g, '') || `section-${Date.now()}`
+        await sendJson('POST', '/projects/sections', { id, name })
+        await load()
+      } else if (dialog.kind === 'rename-section') {
+        if (!name) return
+        await sendJson('PATCH', `/projects/sections/${encodeURIComponent(dialog.id)}`, { name })
+        await load()
+      } else if (dialog.kind === 'delete-take') {
+        await deleteTake(dialog.blockId, dialog.takeId)
+      } else if (dialog.kind === 'delete-section') {
+        await sendJson('DELETE', `/projects/sections/${encodeURIComponent(dialog.id)}`)
+        await load()
+      }
+      setDialog(null)
+    } catch (caught) {
+      setError(toMessage(caught))
+    } finally {
+      setDialogBusy(false)
+    }
+  }
+
+  const showNotice = (message: string): void => {
+    setNotice(message)
+    window.setTimeout(() => setNotice(null), 2600)
+  }
+
+  const convertTake = async (blockId: string, takeId: string): Promise<void> => {
+    setError(null)
+    try {
+      const asset = await sendJson<AssetInfo>('POST', '/assets/from-take', {
+        block: blockId,
+        take: takeId
+      })
+      setAssets((current) =>
+        current.some((item) => item.id === asset.id) ? current : [...current, asset]
+      )
+      showNotice(`Saved “${asset.name}” to the asset pool`)
+      await load()
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
+  /** Refuse to delete a take that a clip still points at, and say where. */
+  const requestDeleteTake = async (blockId: string, takeId: string): Promise<void> => {
+    const uses = lines.flatMap((line) =>
+      line.track.clips
+        .filter(
+          (clip) =>
+            clip.source.kind === 'take' &&
+            clip.source.block === blockId &&
+            clip.source.take === takeId
+        )
+        .map(
+          (clip) =>
+            `${line.character_name || line.character || line.uuid.slice(0, 6)} @${clip.start_ms}ms`
+        )
+    )
+    if (uses.length > 0) {
+      setError(
+        `This take is used by ${uses.length} clip(s): ${uses.slice(0, 3).join(', ')}${
+          uses.length > 3 ? '…' : ''
+        }`
+      )
+      return
+    }
+    setDialog({ kind: 'delete-take', blockId, takeId })
+  }
+
+  const deleteTake = async (blockId: string, takeId: string): Promise<void> => {
+    setError(null)
+    try {
+      const updated = await sendJson<BlockDocument>(
+        'DELETE',
+        `/blocks/${blockId}/takes/${takeId}`
+      )
+      applyBlock(updated)
+      showNotice('Take deleted')
     } catch (caught) {
       setError(toMessage(caught))
     }
@@ -387,6 +674,24 @@ export default function App() {
     }
   }
 
+  /** Pick a specific model of a provider and make sure its slot exists. */
+  const selectVariant = async (providerId: string, modelId: string): Promise<void> => {
+    if (!currentBlock) return
+    const key = `${providerId}/${modelId}`
+    setSlotKey(key)
+    if (currentBlock.slots[key]) return
+    setError(null)
+    try {
+      const updated = await sendJson<BlockDocument>('POST', `/blocks/${currentBlock.id}/slots`, {
+        provider: providerId,
+        model: modelId
+      })
+      applyBlock(updated)
+    } catch (caught) {
+      setError(toMessage(caught))
+    }
+  }
+
   const dropLine = async (target: number): Promise<void> => {
     const from = dragIndex
     setDragIndex(null)
@@ -425,6 +730,23 @@ export default function App() {
     null
   const activeModelParams = activeModelDef?.params ?? []
 
+  /** Assets narrow with the blocks view: linked to the line, or unused. */
+  const assetUsage = (assetPath: string): string[] =>
+    lines
+      .filter((line) =>
+        line.track.clips.some(
+          (clip) => clip.source.kind === 'asset' && clip.source.asset === assetPath
+        )
+      )
+      .map((line) => line.uuid)
+
+  const visibleAssets =
+    blockView === 'linked' && selectedLine
+      ? assets.filter((asset) => assetUsage(asset.path).includes(selectedLine))
+      : blockView === 'orphan'
+        ? assets.filter((asset) => assetUsage(asset.path).length === 0)
+        : assets
+
   const visibleBlocks = blocks.filter((block) => {
     if (blockView === 'orphan') return block.links.lines.length === 0
     if (blockView === 'linked') {
@@ -438,6 +760,9 @@ export default function App() {
     setBlockTab('details')
   }, [currentBlock?.id])
   const sections = project?.project.sections ?? []
+  const currentSectionName =
+    sections.find((section) => section.id === project?.project.current_section)?.name ??
+    'Inbox'
 
   const exportLine = async (uuid: string): Promise<void> => {
     setError(null)
@@ -604,22 +929,6 @@ export default function App() {
     }
   }
 
-  const uploadAsset = async (file: File): Promise<void> => {
-    setError(null)
-    try {
-      const query = new URLSearchParams({ name: file.name })
-      const response = await fetch(`/api/assets/upload?${query}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: await file.arrayBuffer()
-      })
-      if (!response.ok) throw new Error(`Upload failed: ${response.status}`)
-      await load()
-    } catch (caught) {
-      setError(toMessage(caught))
-    }
-  }
-
   const retryPending = async (): Promise<void> => {
     setError(null)
     try {
@@ -724,12 +1033,49 @@ export default function App() {
           <>
             <aside className="pane projects" style={{ width: left.size }}>
               <h2>Project</h2>
+              <div className="slot-actions">
+                <button className="button small" type="button" onClick={() => openCreateDialog()}>
+                  Create
+                </button>
+                <button className="button small" type="button" onClick={() => void openProject()}>
+                  Open
+                </button>
+                <button
+                  className="button small"
+                  type="button"
+                  disabled={!project}
+                  onClick={() => void closeProject()}
+                >
+                  Close
+                </button>
+              </div>
+              {recent.length > 0 ? (
+                <ul className="recent-list">
+                  {recent.slice(0, 6).map((item) => (
+                    <li key={item}>
+                      <button
+                        type="button"
+                        className="recent-row"
+                        title={item}
+                        onClick={() => void openProject(item)}
+                      >
+                        {item}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {project ? (
                 <div className="project-card">
                   <strong>{project.project.name}</strong>
                   <p className="muted">{project.root}</p>
 
-                  <h3>Sections</h3>
+                  <h3 className="with-action">
+                    Sections
+                    <button className="icon-button" type="button" title="Add section" onClick={() => addSection()}>
+                      +
+                    </button>
+                  </h3>
                   {sections.length === 0 ? (
                     <p className="muted">No sections yet.</p>
                   ) : (
@@ -764,6 +1110,22 @@ export default function App() {
                                 onClick={() => void moveSection(section.id, 1)}
                               >
                                 ↓
+                              </button>
+                              <button
+                                className="icon-button"
+                                type="button"
+                                title="Rename section"
+                                onClick={() => renameSection(section.id, section.name)}
+                              >
+                                ✎
+                              </button>
+                              <button
+                                className="icon-button"
+                                type="button"
+                                title="Delete section"
+                                onClick={() => removeSection(section.id)}
+                              >
+                                ×
                               </button>
                             </div>
                           </li>
@@ -824,19 +1186,6 @@ export default function App() {
                 </select>
               </label>
 
-              <label className="setting">
-                <span className="muted">Upload asset</span>
-                <input
-                  type="file"
-                  accept="audio/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) void uploadAsset(file)
-                    event.target.value = ''
-                  }}
-                />
-              </label>
-
               <button className="button" type="button" onClick={() => void retryPending()}>
                 Retry pending writes
               </button>
@@ -867,6 +1216,9 @@ export default function App() {
 
         <section className="pane lines">
           <div className="main-tabs">
+            <span className="scope-chip" title="Lines belong to the active section">
+              Section · {currentSectionName}
+            </span>
             <button
               type="button"
               className={`tab${mainTab === 'lines' ? ' on' : ''}`}
@@ -874,6 +1226,10 @@ export default function App() {
             >
               Lines ({lines.length})
             </button>
+            <span className="tabs-divider" />
+            <span className="scope-chip project" title="Characters are shared by every section">
+              Project
+            </span>
             <button
               type="button"
               className={`tab${mainTab === 'characters' ? ' on' : ''}`}
@@ -885,6 +1241,34 @@ export default function App() {
 
           {mainTab === 'characters' ? (
             <div className="characters-page">
+              <p className="scope-note">
+                Characters are project-wide: the same voice mapping applies to
+                every section, and switching sections does not change this list.
+              </p>
+              <div className="character-new">
+                <input
+                  placeholder="id"
+                  value={newCharacterId}
+                  onChange={(event) => setNewCharacterId(event.target.value)}
+                />
+                <input
+                  placeholder="name"
+                  value={newCharacterName}
+                  onChange={(event) => setNewCharacterName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void createCharacter()
+                  }}
+                />
+                <button
+                  className="button small"
+                  type="button"
+                  disabled={!newCharacterId.trim()}
+                  onClick={() => void createCharacter()}
+                >
+                  Add
+                </button>
+              </div>
+
               {characters.length === 0 ? (
                 <p className="muted">No characters in this project yet.</p>
               ) : (
@@ -909,6 +1293,7 @@ export default function App() {
                     <input
                       defaultValue={activeCharacter.id}
                       key={`id-${activeCharacter.id}`}
+                      disabled={activeCharacter.is_default}
                       onBlur={(event) => {
                         const next = event.target.value.trim()
                         if (next && next !== activeCharacter.id) {
@@ -930,68 +1315,165 @@ export default function App() {
                       }}
                     />
                   </label>
-                  <label className="field">
-                    <span className="muted">Provider</span>
-                    <select
-                      value={activeCharacter.provider ?? providers[0]?.id ?? ''}
-                      onChange={(event) => {
-                        const next = providers.find(
-                          (provider) => provider.id === event.target.value
-                        )
-                        const voice = next?.voices[0]
-                        if (next && voice) {
-                          void saveCharacterVoice(activeCharacter.id, next.id, voice.id)
-                        }
-                      }}
-                    >
-                      {providers.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span className="muted">Voice</span>
-                    <select
-                      value={activeCharacter.voice ?? ''}
-                      onChange={(event) => {
-                        const provider =
-                          providers.find((item) => item.id === activeCharacter.provider) ??
-                          providers[0]
-                        if (provider) {
-                          void saveCharacterVoice(
-                            activeCharacter.id,
-                            provider.id,
-                            event.target.value
-                          )
-                        }
-                      }}
-                    >
-                      {(
-                        providers.find(
-                          (provider) => provider.id === activeCharacter.provider
-                        )?.voices ??
-                        providers[0]?.voices ??
-                        []
-                      ).map((voice) => (
-                        <option key={voice.id} value={voice.id}>
-                          {voice.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+
+                  <div className="provider-defaults">
+                    {providers.map((provider) => {
+                      const config = activeCharacter.providers[provider.id]
+                      const paramDefs = provider.models[0]?.params ?? []
+                      return (
+                        <section className="provider-block" key={provider.id}>
+                          <header className="provider-head">
+                            <strong>{provider.label}</strong>
+                            <button
+                              className="button small"
+                              type="button"
+                              disabled={!config}
+                              onClick={() =>
+                                void clearCharacterProvider(activeCharacter.id, provider.id)
+                              }
+                            >
+                              Reset
+                            </button>
+                          </header>
+
+                          {provider.voice_mode === 'text' ? (
+                            <div className="field">
+                              <span className="muted">Voice id</span>
+                              <div className="param-row">
+                                <input
+                                  key={`voice-${config?.voice ?? ''}`}
+                                  defaultValue={config?.voice ?? ''}
+                                  placeholder="voice id"
+                                  onBlur={(event) => {
+                                    const next = event.target.value.trim()
+                                    if (next !== (config?.voice ?? '')) {
+                                      void saveCharacterProvider(
+                                        activeCharacter.id,
+                                        provider.id,
+                                        { voice: next }
+                                      )
+                                    }
+                                  }}
+                                />
+                                <button
+                                  className="revert"
+                                  type="button"
+                                  title="Clear the voice id"
+                                  disabled={!config?.voice}
+                                  onClick={() =>
+                                    void saveCharacterProvider(activeCharacter.id, provider.id, {
+                                      voice: ''
+                                    })
+                                  }
+                                >
+                                  ↺
+                                </button>
+                              </div>
+                            </div>
+                          ) : provider.voices.length > 0 ? (
+                            <div className="field">
+                              <span className="muted">Voice</span>
+                              <div className="param-row">
+                                <select
+                                  value={config?.voice ?? provider.voices[0]?.id ?? ''}
+                                  onChange={(event) =>
+                                    void saveCharacterProvider(activeCharacter.id, provider.id, {
+                                      voice: event.target.value
+                                    })
+                                  }
+                                >
+                                  {provider.voices.map((voice) => (
+                                    <option key={voice.id} value={voice.id}>
+                                      {voice.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  className="revert"
+                                  type="button"
+                                  title="Reset voice to the provider default"
+                                  disabled={!config?.voice}
+                                  onClick={() =>
+                                    void saveCharacterProvider(activeCharacter.id, provider.id, {
+                                      voice: ''
+                                    })
+                                  }
+                                >
+                                  ↺
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {paramDefs.length > 0 ? (
+                            <div className="param-grid">
+                              {paramDefs.map((param) => {
+                                const value = config?.params[param.id] ?? param.default
+                                return (
+                                  <div key={param.id} className="param">
+                                    <span className="muted">{param.label}</span>
+                                    <div className="param-row">
+                                      <input
+                                        key={`${param.id}-${String(value)}`}
+                                        type={param.type === 'number' ? 'number' : 'text'}
+                                        defaultValue={
+                                          value === null || value === undefined
+                                            ? ''
+                                            : String(value)
+                                        }
+                                        min={param.minimum ?? undefined}
+                                        max={param.maximum ?? undefined}
+                                        step={param.step ?? undefined}
+                                        onBlur={(event) => {
+                                          const parsed =
+                                            param.type === 'number'
+                                              ? Number(event.target.value)
+                                              : event.target.value
+                                          if (parsed === value) return
+                                          void saveCharacterProvider(
+                                            activeCharacter.id,
+                                            provider.id,
+                                            {
+                                              params: {
+                                                ...(config?.params ?? {}),
+                                                [param.id]: parsed
+                                              }
+                                            }
+                                          )
+                                        }}
+                                      />
+                                      <button
+                                        className="revert"
+                                        type="button"
+                                        title={`Reset to ${String(param.default)}`}
+                                        onClick={() => {
+                                          const next = { ...(config?.params ?? {}) }
+                                          delete next[param.id]
+                                          void saveCharacterProvider(
+                                            activeCharacter.id,
+                                            provider.id,
+                                            { params: next }
+                                          )
+                                        }}
+                                      >
+                                        ↺
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : null}
+                        </section>
+                      )
+                    })}
+                  </div>
+
                   <div className="slot-actions">
                     <button
                       className="button small"
                       type="button"
-                      onClick={() => void resetCharacterVoice(activeCharacter.id)}
-                    >
-                      Reset voice
-                    </button>
-                    <button
-                      className="button small"
-                      type="button"
+                      disabled={activeCharacter.is_default}
                       onClick={() => void deleteCharacter(activeCharacter.id)}
                     >
                       Delete character
@@ -1000,29 +1482,6 @@ export default function App() {
                 </div>
               ) : null}
 
-              <div className="character-new">
-                <input
-                  placeholder="id"
-                  value={newCharacterId}
-                  onChange={(event) => setNewCharacterId(event.target.value)}
-                />
-                <input
-                  placeholder="name"
-                  value={newCharacterName}
-                  onChange={(event) => setNewCharacterName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') void createCharacter()
-                  }}
-                />
-                <button
-                  className="button small"
-                  type="button"
-                  disabled={!newCharacterId.trim()}
-                  onClick={() => void createCharacter()}
-                >
-                  Add
-                </button>
-              </div>
             </div>
           ) : (
             <>
@@ -1076,6 +1535,8 @@ export default function App() {
                     onClick={(event) => {
                       setSelectedBlock(null)
                       setClipInfo(null)
+                      setLineClip(null)
+                      setInspectorFocus('line')
                       if (event.ctrlKey || event.metaKey || event.shiftKey) {
                         setSelectedLines((current) =>
                           current.includes(line.uuid)
@@ -1119,9 +1580,16 @@ export default function App() {
                       blocks={blocks}
                       countdownMs={project?.project.recording_countdown_ms ?? 2000}
                       height={lineHeights[line.uuid] ?? 150}
-                      onResize={(next) =>
-                        setLineHeights((current) => ({ ...current, [line.uuid]: next }))
+                      selectedClip={
+                        lineClip?.lineUuid === line.uuid ? lineClip : null
                       }
+                      onAssetSaved={() => {
+                        void apiJson<AssetInfo[]>('/assets').then(setAssets)
+                      }}
+                      onClipSelected={(payload) => {
+                        setLineClip(payload ? { lineUuid: line.uuid, ...payload } : null)
+                        if (payload) setInspectorFocus('line-clip')
+                      }}
                       onSaved={(saved) => {
                         setLines((current) =>
                           current.map((item) => (item.uuid === saved.uuid ? saved : item))
@@ -1188,7 +1656,7 @@ export default function App() {
                 {visibleBlocks.map((block) => (
                   <li
                     key={block.id}
-                    className={`block-card${block.id === selectedBlock ? ' selected' : ''}`}
+                    className={`block-card${block.id === selectedBlock ? ' selected' : ''}${generating?.blockId === block.id ? ' generating' : ''}`}
                     draggable
                     title="Drag onto the workbench"
                     onDragStart={(event) => {
@@ -1206,6 +1674,9 @@ export default function App() {
                     onClick={() => {
                       setSelectedBlock(block.id)
                       setClipInfo(null)
+                      setLineClip(null)
+                      setBlockTab('details')
+                      setInspectorFocus('block')
                     }}
                   >
                     <span className="block-title">{block.title}</span>
@@ -1217,13 +1688,61 @@ export default function App() {
                 ))}
               </ul>
             )}
+
+            <h3 className="with-action">Assets ({visibleAssets.length})</h3>
+            {visibleAssets.length === 0 ? (
+              <p className="muted">
+                {selectedLine
+                  ? 'No assets on this line yet.'
+                  : 'Recordings, renders and converted takes land here.'}
+              </p>
+            ) : (
+              <ul className="asset-list">
+                {visibleAssets.map((asset) => {
+                  const usedBy = lines.filter((line) =>
+                    line.track.clips.some(
+                      (clip) =>
+                        clip.source.kind === 'asset' && clip.source.asset === asset.path
+                    )
+                  )
+                  return (
+                    <li
+                      key={asset.id}
+                      className="asset-card"
+                      draggable
+                      title="Drag onto a line timeline or the workbench"
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'copy'
+                        event.dataTransfer.setData(
+                          'application/x-dvp-asset',
+                          JSON.stringify({
+                            asset: asset.path,
+                            duration_ms: asset.duration_ms ?? 0
+                          })
+                        )
+                      }}
+                    >
+                      <span className="block-title">{asset.name}</span>
+                      <span className="block-meta">
+                        {asset.duration_ms
+                          ? `${(asset.duration_ms / 1000).toFixed(2)}s`
+                          : 'unknown length'}
+                        {usedBy.length > 0
+                          ? ` · ${usedBy.length} line(s)`
+                          : ' · unused'}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </div>
 
           <div className="splitter row" {...inspector.separatorProps} />
 
           <div className="pane inspector" style={{ height: inspector.size }}>
             <h2>Inspector</h2>
-            {currentBlock ? (
+            {inspectorFocus === 'block' && currentBlock ? (
               <div className="block-detail">
                 <div className="tab-row">
                   <button
@@ -1269,16 +1788,16 @@ export default function App() {
                           })
                         }}
                       >
-                        {!characters.some((item) => item.id === currentBlock.character) ? (
-                          <option value={currentBlock.character}>
-                            {currentBlock.character || 'none'}
-                          </option>
-                        ) : null}
-                        {characters.map((character) => (
-                          <option key={character.id} value={character.id}>
-                            {character.name}
-                          </option>
-                        ))}
+                        <option value="">
+                          {characters.find((item) => item.is_default)?.name ?? '无角色'}
+                        </option>
+                        {characters
+                          .filter((character) => !character.is_default)
+                          .map((character) => (
+                            <option key={character.id} value={character.id}>
+                              {character.name}
+                            </option>
+                          ))}
                       </select>
                     </label>
                     <p className="muted">{currentBlock.text}</p>
@@ -1292,18 +1811,35 @@ export default function App() {
                       </button>
                     </div>
 
-                    <h3>Model</h3>
-                    <select
-                      className="slot-select"
-                      value={activeProvider?.id ?? ''}
-                      onChange={(event) => void selectModel(event.target.value)}
-                    >
-                      {providers.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.label}
-                        </option>
-                      ))}
-                    </select>
+                    <h3>Provider</h3>
+                    <div className="select-row">
+                      <select
+                        className="slot-select"
+                        value={activeProvider?.id ?? ''}
+                        onChange={(event) => void selectModel(event.target.value)}
+                      >
+                        {providers.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.label}
+                          </option>
+                        ))}
+                      </select>
+                      {activeProvider && activeProvider.models.length > 1 ? (
+                        <select
+                          className="slot-select"
+                          value={activeSlot?.model ?? activeProvider.models[0].id}
+                          onChange={(event) =>
+                            void selectVariant(activeProvider.id, event.target.value)
+                          }
+                        >
+                          {activeProvider.models.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
                     {activeSlotKey && currentBlock.slots[activeSlotKey] ? (
                       <SlotEditor
                         key={activeSlotKey}
@@ -1311,12 +1847,25 @@ export default function App() {
                         slot={currentBlock.slots[activeSlotKey]}
                         providerLabel={activeProvider?.label ?? activeSlotKey}
                         voices={activeProvider?.voices ?? []}
+                        voiceMode={activeProvider?.voice_mode ?? 'select'}
+                        streaming={activeProvider?.streaming ?? false}
+                        onGenerating={(running, cancel) => {
+                          if (running) {
+                            setGenerating({
+                              blockId: currentBlock.id,
+                              title: currentBlock.title,
+                              cancel
+                            })
+                          } else {
+                            setGenerating(null)
+                          }
+                        }}
                         paramDefs={activeModelParams}
                         onUpdated={applyBlock}
                         onError={(message) => setError(message)}
                       />
                     ) : (
-                      <p className="muted">Selecting a model creates its slot.</p>
+                      <p className="muted">Selecting a provider creates its slot.</p>
                     )}
                   </>
                 ) : currentBlock.takes.length === 0 ? (
@@ -1329,6 +1878,15 @@ export default function App() {
                         className="take-row"
                         draggable
                         title="Drag onto a line timeline"
+                        onContextMenu={(event) => {
+                          event.preventDefault()
+                          setTakeMenu({
+                            x: Math.min(event.clientX, window.innerWidth - 200),
+                            y: Math.min(event.clientY, window.innerHeight - 140),
+                            blockId: currentBlock.id,
+                            takeId: take.id
+                          })
+                        }}
                         onDragStart={(event) => {
                           event.dataTransfer.effectAllowed = 'copy'
                           event.dataTransfer.setData(
@@ -1337,33 +1895,90 @@ export default function App() {
                           )
                         }}
                       >
-                        <span className="take-meta">
-                          {take.provider}/{take.model} ·{' '}
-                          {take.duration_ms ? `${(take.duration_ms / 1000).toFixed(2)}s` : '—'}
-                          {take.id === currentBlock.active_take ? ' · active' : ''}
-                        </span>
-                        <audio controls src={`/api/${take.asset}`} />
                         <button
-                          className="button small"
+                          className={`take-use${
+                            take.id === currentBlock.active_take ? ' active' : ''
+                          }`}
                           type="button"
+                          title={
+                            take.id === currentBlock.active_take
+                              ? 'This take is active'
+                              : 'Use this take'
+                          }
                           disabled={take.id === currentBlock.active_take}
-                          onClick={() => {
-                            void activateTake(take.id)
-                            setBlockTab('details')
-                          }}
+                          onClick={() => void activateTake(take.id)}
                         >
-                          {take.id === currentBlock.active_take ? 'Active' : 'Use'}
+                          {take.id === currentBlock.active_take ? '●' : '✓'}
+                        </button>
+                        <span className="take-meta">
+                          {take.provider} ·{' '}
+                          {take.duration_ms ? `${(take.duration_ms / 1000).toFixed(2)}s` : '—'}
+                        </span>
+                        <audio className="take-audio" controls src={`/api/${take.asset}`} />
+                        <button
+                          className="icon-button take-delete"
+                          type="button"
+                          title="Delete this take"
+                          onClick={() => void requestDeleteTake(currentBlock.id, take.id)}
+                        >
+                          ✕
                         </button>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
-            ) : clipInfo ? (
+            ) : inspectorFocus === 'line-clip' && lineClip ? (
+              <div className="block-detail">
+                <p>
+                  <strong>Line clip #{lineClip.index + 1}</strong>
+                </p>
+                <label className="field">
+                  <span className="muted">Volume</span>
+                  <div className="param-row">
+                    <input
+                      type="range"
+                      min={0}
+                      max={200}
+                      step={5}
+                      value={Math.round(lineClip.gain * 100)}
+                      onChange={(event) =>
+                        setLineClip({
+                          ...lineClip,
+                          gain: Number(event.target.value) / 100
+                        })
+                      }
+                    />
+                    <span className="muted">{Math.round(lineClip.gain * 100)}%</span>
+                  </div>
+                </label>
+                <p className="muted">
+                  start {lineClip.start_ms}ms · in {lineClip.in_ms}ms · out {lineClip.out_ms}ms
+                </p>
+              </div>
+            ) : inspectorFocus === 'clip' && clipInfo ? (
               <div className="block-detail">
                 <p>
                   <strong>{clipInfo.name}</strong>
                 </p>
+                <label className="field">
+                  <span className="muted">Volume</span>
+                  <div className="param-row">
+                    <input
+                      type="range"
+                      min={0}
+                      max={200}
+                      step={5}
+                      value={Math.round((clipInfo.gain ?? 1) * 100)}
+                      onChange={(event) => {
+                        const gain = Number(event.target.value) / 100
+                        setClipInfo({ ...clipInfo, gain })
+                        clipGainRef.current?.(clipInfo.id, gain)
+                      }}
+                    />
+                    <span className="muted">{Math.round((clipInfo.gain ?? 1) * 100)}%</span>
+                  </div>
+                </label>
                 <p className="muted">
                   start {clipInfo.start_ms}ms · in {clipInfo.in_ms}ms · out {clipInfo.out_ms}ms
                 </p>
@@ -1371,7 +1986,7 @@ export default function App() {
                   source: {clipInfo.source.kind === 'take' ? clipInfo.source.take : clipInfo.source.asset}
                 </p>
               </div>
-            ) : currentLine ? (
+            ) : inspectorFocus === 'line' && currentLine ? (
               <div className="block-detail">
                 <p className="muted">{currentLine.dtl}</p>
                 <label className="field">
@@ -1382,16 +1997,16 @@ export default function App() {
                       void setLineCharacter(currentLine, event.target.value)
                     }
                   >
-                    {!characters.some((item) => item.id === currentLine.character) ? (
-                      <option value={currentLine.character}>
-                        {currentLine.character || 'none'}
-                      </option>
-                    ) : null}
-                    {characters.map((character) => (
-                      <option key={character.id} value={character.id}>
-                        {character.name}
-                      </option>
-                    ))}
+                    <option value="">
+                      {characters.find((item) => item.is_default)?.name ?? '无角色'}
+                    </option>
+                    {characters
+                      .filter((character) => !character.is_default)
+                      .map((character) => (
+                        <option key={character.id} value={character.id}>
+                          {character.name}
+                        </option>
+                      ))}
                   </select>
                 </label>
                 <h3>Text</h3>
@@ -1452,7 +2067,12 @@ export default function App() {
                     current.includes(lineUuid) ? current : [...current, lineUuid]
                   )
                 }
-                onClipSelected={setClipInfo}
+                onClipSelected={(clip, setGain) => {
+                  if (!clip) return
+                  setClipInfo(clip)
+                  clipGainRef.current = setGain ?? null
+                  setInspectorFocus('clip')
+                }}
               />
             ) : (
               <p className="muted">Open a project to use the section workbench.</p>
@@ -1460,6 +2080,45 @@ export default function App() {
           </footer>
         </>
       ) : null}
+
+      {takeMenu ? (
+        <div
+          className="context-menu"
+          style={{ left: takeMenu.x, top: takeMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              void activateTake(takeMenu.takeId)
+              setTakeMenu(null)
+              setBlockTab('details')
+            }}
+          >
+            Use this take
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void convertTake(takeMenu.blockId, takeMenu.takeId)
+              setTakeMenu(null)
+            }}
+          >
+            Convert to asset
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void deleteTake(takeMenu.blockId, takeMenu.takeId)
+              setTakeMenu(null)
+            }}
+          >
+            Delete take
+          </button>
+        </div>
+      ) : null}
+
+      {notice ? <div className="notice">{notice}</div> : null}
 
       {blockMenu ? (
         <div
@@ -1488,6 +2147,157 @@ export default function App() {
           </button>
         </div>
       ) : null}
+
+      {generating ? (
+        <div className="generating-bar">
+          <span className="generating-pulse" />
+          <span>Generating “{generating.title}”…</span>
+          <button
+            className="button small"
+            type="button"
+            onClick={() => {
+              generating.cancel()
+              setGenerating(null)
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
+      {dialog ? (
+        <div
+          className="modal-backdrop"
+          onPointerDown={() => {
+            if (!dialogBusy) closeDialog()
+          }}
+        >
+          <div className="modal" onPointerDown={(event) => event.stopPropagation()}>
+            <h3>
+              {dialog.kind === 'create-project'
+                ? 'New project'
+                : dialog.kind === 'open-project'
+                  ? 'Open project'
+                  : dialog.kind === 'new-section'
+                    ? 'New section'
+                    : dialog.kind === 'rename-section'
+                      ? 'Rename section'
+                      : dialog.kind === 'delete-take'
+                        ? 'Delete take'
+                        : 'Delete section'}
+            </h3>
+
+            {dialog.kind === 'delete-section' ? (
+              <p className="muted">
+                The section and its workspace are removed. Line documents stay on disk.
+              </p>
+            ) : null}
+            {dialog.kind === 'delete-take' ? (
+              <p className="muted">
+                The take file is deleted permanently. This cannot be undone.
+              </p>
+            ) : null}
+
+            {dialog.kind === 'create-project' ? (
+              <>
+                <label className="form-field">
+                  <span className="muted">Name</span>
+                  <input
+                    autoFocus
+                    value={formName}
+                    onChange={(event) => setFormName(event.target.value)}
+                  />
+                </label>
+                <label className="form-field">
+                  <span className="muted">Location</span>
+                  <div className="form-row">
+                    <input
+                      value={formParent}
+                      onChange={(event) => setFormParent(event.target.value)}
+                    />
+                    <button
+                      className="button small"
+                      type="button"
+                      onClick={() => void browseFolder('parent')}
+                    >
+                      Browse
+                    </button>
+                  </div>
+                </label>
+                <label className="form-field">
+                  <span className="muted">Godot project</span>
+                  <div className="form-row">
+                    <input
+                      value={formGodot}
+                      onChange={(event) => setFormGodot(event.target.value)}
+                    />
+                    <button
+                      className="button small"
+                      type="button"
+                      onClick={() => void browseFolder('godot')}
+                    >
+                      Browse
+                    </button>
+                  </div>
+                </label>
+              </>
+            ) : null}
+
+            {dialog.kind === 'open-project' ? (
+              <label className="form-field">
+                <span className="muted">Project folder</span>
+                <input
+                  autoFocus
+                  value={formRoot}
+                  onChange={(event) => setFormRoot(event.target.value)}
+                />
+              </label>
+            ) : null}
+
+            {dialog.kind === 'new-section' || dialog.kind === 'rename-section' ? (
+              <label className="form-field">
+                <span className="muted">Name</span>
+                <input
+                  autoFocus
+                  value={formName}
+                  onChange={(event) => setFormName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void confirmDialog()
+                  }}
+                />
+              </label>
+            ) : null}
+
+            <div className="modal-actions">
+              <button
+                className="button small"
+                type="button"
+                disabled={dialogBusy}
+                onClick={closeDialog}
+              >
+                Cancel
+              </button>
+              <button
+                className={`button small primary${
+                  dialog.kind === 'delete-section' || dialog.kind === 'delete-take'
+                    ? ' danger'
+                    : ''
+                }`}
+                type="button"
+                disabled={dialogBusy}
+                onClick={() => void confirmDialog()}
+              >
+                {dialog.kind === 'create-project'
+                  ? 'Create'
+                  : dialog.kind === 'delete-section' || dialog.kind === 'delete-take'
+                    ? 'Delete'
+                    : 'OK'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   )
 }
@@ -1497,17 +2307,23 @@ interface SlotEditorProps {
   slot: BlockSlot
   providerLabel: string
   voices: ProviderVoice[]
+  voiceMode: string
+  streaming: boolean
+  onGenerating?: (running: boolean, cancel: () => void) => void
   paramDefs: ProviderParam[]
   onUpdated: (block: BlockDocument) => void
   onError: (message: string) => void
 }
 
-/** One provider/model slot: edit its prompt, convert it, or revert the last change. */
+/** One provider slot: edit its prompt and parameters, convert it, or generate. */
 function SlotEditor({
   block,
   slot,
   providerLabel,
   voices,
+  voiceMode,
+  streaming,
+  onGenerating,
   paramDefs,
   onUpdated,
   onError
@@ -1521,16 +2337,136 @@ function SlotEditor({
 
   const query = `?provider=${encodeURIComponent(slot.provider)}&model=${encodeURIComponent(slot.model)}`
 
-  const run = async (call: () => Promise<BlockDocument>): Promise<void> => {
-    setBusy(true)
+  const abortRef = useRef<AbortController | null>(null)
+  const [listen, setListen] = useState<boolean>(() => {
     try {
-      const updated = await call()
+      return localStorage.getItem('dvp.listen') !== '0'
+    } catch {
+      return true
+    }
+  })
+
+  const toggleListen = (): void => {
+    const next = !listen
+    setListen(next)
+    try {
+      localStorage.setItem('dvp.listen', next ? '1' : '0')
+    } catch {
+      // The preference is a convenience; storage may be unavailable.
+    }
+  }
+
+  const cancel = (): void => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setBusy(false)
+  }
+
+  /** Stream the audio, play it, and keep the take the service saves. */
+  const generateStream = async (): Promise<void> => {
+    setBusy(true)
+    onError('')
+    onGenerating?.(true, cancel)
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const query = new URLSearchParams({
+        provider: slot.provider,
+        model: slot.model
+      })
+      const response = await fetch(`/api/blocks/${block.id}/generate-stream?${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: slot.provider, model: slot.model }),
+        signal: controller.signal
+      })
+      if (!response.ok) {
+        const body = (await response.json()) as { detail?: string }
+        throw new Error(body.detail ?? `Generation failed: HTTP ${response.status}`)
+      }
+
+      const rate = Number(response.headers.get('X-Sample-Rate') ?? 24000)
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('The audio stream is not readable')
+
+      const context = listen ? new AudioContext() : null
+      let next = context ? context.currentTime + 0.08 : 0
+      let received = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value || value.byteLength < 2) continue
+        received += value.byteLength
+        if (!context) continue
+        const samples = new Int16Array(
+          value.buffer,
+          value.byteOffset,
+          Math.floor(value.byteLength / 2)
+        )
+        const buffer = context.createBuffer(1, samples.length, rate)
+        const channel = buffer.getChannelData(0)
+        for (let index = 0; index < samples.length; index += 1) {
+          channel[index] = samples[index] / 32768
+        }
+        const source = context.createBufferSource()
+        source.buffer = buffer
+        source.connect(context.destination)
+        const start = Math.max(next, context.currentTime)
+        source.start(start)
+        next = start + buffer.duration
+      }
+
+      if (received === 0) throw new Error('The provider returned no audio')
+
+      // The service saves the take when the stream closes, which can land a
+      // moment after the client sees the end of the body.
+      const beforeTakes = block.takes.length
+      let updated = await apiJson<BlockDocument>(`/blocks/${block.id}`)
+      for (
+        let attempt = 0;
+        attempt < 6 && updated.takes.length <= beforeTakes;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => window.setTimeout(resolve, 300))
+        updated = await apiJson<BlockDocument>(`/blocks/${block.id}`)
+      }
+      onUpdated(updated)
+      window.dispatchEvent(new CustomEvent('dvp:notice', { detail: 'Take saved' }))
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        onError(toMessage(caught))
+      }
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null
+        setBusy(false)
+        onGenerating?.(false, cancel)
+      }
+    }
+  }
+
+  const run = async (
+    call: (signal: AbortSignal) => Promise<BlockDocument>,
+    report = false
+  ): Promise<void> => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    setBusy(true)
+    if (report) onGenerating?.(true, cancel)
+    try {
+      const updated = await call(controller.signal)
       onUpdated(updated)
       onError('')
     } catch (caught) {
-      onError(toMessage(caught))
+      if (!controller.signal.aborted) {
+        onError(toMessage(caught))
+      }
     } finally {
-      setBusy(false)
+      if (abortRef.current === controller) {
+        abortRef.current = null
+        setBusy(false)
+        if (report) onGenerating?.(false, cancel)
+      }
     }
   }
 
@@ -1554,7 +2490,43 @@ function SlotEditor({
         }}
         disabled={busy}
       />
-      {voices.length > 0 ? (
+      {voiceMode === 'text' ? (
+        <div className="param">
+          <span className="muted">Voice id</span>
+          <div className="param-row">
+            <input
+              key={`voice-${slot.voice ?? ''}`}
+              defaultValue={slot.voice ?? ''}
+              placeholder="voice id"
+              disabled={busy}
+              onBlur={(event) => {
+                const next = event.target.value.trim()
+                if (next === (slot.voice ?? '')) return
+                void run(() =>
+                  sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                    voice: next
+                  })
+                )
+              }}
+            />
+            <button
+              className="revert"
+              type="button"
+              title="Clear the voice id"
+              disabled={busy || !slot.voice}
+              onClick={() =>
+                void run(() =>
+                  sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                    voice: ''
+                  })
+                )
+              }
+            >
+              ↺
+            </button>
+          </div>
+        </div>
+      ) : voices.length > 0 ? (
         <div className="param">
           <span className="muted">Voice</span>
           <div className="param-row">
@@ -1570,7 +2542,6 @@ function SlotEditor({
                 )
               }}
             >
-              <option value="">(character default)</option>
               {voices.map((voice) => (
                 <option key={voice.id} value={voice.id}>
                   {voice.label}
@@ -1600,7 +2571,7 @@ function SlotEditor({
           {paramDefs.map((param) => {
             const value = slot.params[param.id] ?? param.default
             return (
-              <div key={param.id} className="param">
+              <div key={`${param.id}-${String(value)}`} className="param">
                 <span className="muted">{param.label}</span>
                 <div className="param-row">
                 <input
@@ -1626,13 +2597,15 @@ function SlotEditor({
                   type="button"
                   title={`Reset to ${String(param.default)}`}
                   disabled={busy || value === param.default}
-                  onClick={() =>
+                  onClick={() => {
+                    const next = { ...slot.params }
+                    delete next[param.id]
                     void run(() =>
                       sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
-                        params: { ...slot.params, [param.id]: param.default }
+                        params: next
                       })
                     )
-                  }
+                  }}
                 >
                   ↺
                 </button>
@@ -1642,31 +2615,67 @@ function SlotEditor({
           })}
         </div>
       ) : null}
-      <div className="slot-actions">
+      <div className="slot-footer">
+        <div className="slot-footer-left">
+          <button
+            className="button small ghost"
+            type="button"
+            disabled={busy || Object.keys(slot.params).length === 0}
+            onClick={() =>
+              void run(() =>
+                sendJson<BlockDocument>('PATCH', `/blocks/${block.id}/slots${query}`, {
+                  params: {}
+                })
+              )
+            }
+          >
+            Reset
+          </button>
+          <button
+            className="button small ghost"
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void run(() => sendJson<BlockDocument>('POST', `/blocks/${block.id}/slots/convert${query}`))
+            }
+          >
+            Convert
+          </button>
+        </div>
+        {streaming ? (
+          <label className="listen-toggle" title="Play the audio while it generates">
+            <input type="checkbox" checked={listen} onChange={toggleListen} />
+            Listen
+          </label>
+        ) : null}
+        {busy ? (
+          <button className="button small ghost" type="button" onClick={cancel}>
+            Cancel
+          </button>
+        ) : null}
         <button
-          className="button small"
+          className={`run-button${busy ? ' generating' : ''}`}
           type="button"
           disabled={busy}
-          onClick={() =>
-            void run(() => sendJson<BlockDocument>('POST', `/blocks/${block.id}/slots/convert${query}`))
-          }
-        >
-          Convert for this model
-        </button>
-        <button
-          className="button small primary"
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            void run(() =>
-              sendJson<BlockDocument>('POST', `/blocks/${block.id}/generate`, {
-                provider: slot.provider,
-                model: slot.model
-              })
+          onClick={() => {
+            if (streaming) {
+              void generateStream()
+              return
+            }
+            void run(
+              (signal) =>
+                sendJson<BlockDocument>(
+                  'POST',
+                  `/blocks/${block.id}/generate`,
+                  { provider: slot.provider, model: slot.model },
+                  signal
+                ),
+              true
             )
-          }
+          }}
         >
-          {busy ? 'Working…' : 'Generate take'}
+          <span>{busy ? 'Generating…' : 'Run'}</span>
+          <span className="run-icon">{busy ? '◌' : '↑'}</span>
         </button>
       </div>
     </div>

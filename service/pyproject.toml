@@ -5,5 +5,10 @@ description = "Local service for Dialogic Voice Partner"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
+    "imageio-ffmpeg>=0.5",
     "uvicorn[standard]>=0.30",
 ]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

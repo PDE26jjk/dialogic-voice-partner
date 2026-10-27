@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -36,6 +36,12 @@ class Clip(BaseModel):
     in_ms: int = Field(ge=0, description="Source in point")
     out_ms: int = Field(ge=0, description="Source out point")
     start_ms: int = Field(ge=0, description="Position on the line timeline")
+    gain: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=4.0,
+        description="Per-clip volume applied to playback and export",
+    )
 
 
 class Track(BaseModel):
@@ -56,6 +62,12 @@ class WorkspaceClip(BaseModel):
     start_ms: int = Field(default=0, ge=0, description="Position on the shared timeline")
     in_ms: int = Field(default=0, ge=0, description="Trim start inside the source")
     out_ms: int = Field(default=0, ge=0, description="Trim end inside the source")
+    gain: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=4.0,
+        description="Per-clip volume used when previewing the workbench",
+    )
 
 
 class WorkspaceTrack(BaseModel):
@@ -92,8 +104,59 @@ class ExportSettings(BaseModel):
     channels: int = 1
 
 
+class CharacterProviderSettings(BaseModel):
+    """What one character uses on one provider."""
+
+    voice: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CharacterSettings(BaseModel):
+    """A character's project-wide defaults for every provider."""
+
+    name: str = ""
+    providers: dict[str, CharacterProviderSettings] = Field(default_factory=dict)
+
+
 class ProjectSettings(BaseModel):
     """`project.json`: one project bound to one Godot project."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_characters(cls, data):
+        """Fold the legacy `providers.<p>.voices` map into character settings."""
+        if not isinstance(data, dict):
+            return data
+        characters = data.get("characters") or {}
+        providers = data.get("providers") or {}
+
+        migrated: dict[str, dict] = {}
+        for character_id, value in characters.items():
+            if isinstance(value, str):
+                migrated[character_id] = {"name": value, "providers": {}}
+            elif isinstance(value, dict):
+                migrated[character_id] = {
+                    "name": value.get("name", character_id),
+                    "providers": value.get("providers", {}),
+                }
+
+        for provider_id, entry in providers.items():
+            voices = entry.get("voices") if isinstance(entry, dict) else None
+            if not isinstance(voices, dict):
+                continue
+            for character_id, voice in voices.items():
+                if not isinstance(voice, str) or not voice:
+                    continue
+                migrated.setdefault(character_id, {"name": character_id, "providers": {}})
+                provider_map = migrated[character_id].setdefault("providers", {})
+                provider_map.setdefault(provider_id, {})
+                if not provider_map[provider_id].get("voice"):
+                    provider_map[provider_id]["voice"] = voice
+
+        data = dict(data)
+        data["characters"] = migrated
+        data["providers"] = {}
+        return data
 
     version: int = 1
     name: str
@@ -120,11 +183,11 @@ class ProjectSettings(BaseModel):
     )
     providers: dict[str, Any] = Field(
         default_factory=dict,
-        description="Per-provider settings, including character to voice mappings",
+        description="Legacy character to voice mappings, migrated into characters",
     )
-    characters: dict[str, str] = Field(
+    characters: dict[str, CharacterSettings] = Field(
         default_factory=dict,
-        description="Character id to display name, editable from the characters panel",
+        description="Character id to its per-provider voice and parameters",
     )
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -398,17 +461,34 @@ class ProviderInfo(BaseModel):
         default_factory=list,
         description="Voices that can be mapped to characters",
     )
+    voice_mode: str = Field(
+        default="select",
+        description="'select' shows the voice list, 'text' accepts a typed id",
+    )
+    streaming: bool = Field(
+        default=False,
+        description="True when the provider can stream audio while it generates",
+    )
 
 
 class CharacterInfo(BaseModel):
-    """A Dialogic character seen in the project, with its current voice mapping."""
+    """A Dialogic character with its per-provider defaults."""
 
     id: str
     name: str
     lines: int = 0
-    provider: str | None = None
+    providers: dict[str, CharacterProviderSettings] = Field(default_factory=dict)
+    is_default: bool = Field(
+        default=False,
+        description="True for the built-in character that unmapped blocks fall back to",
+    )
+
+
+class UpdateCharacterProviderRequest(BaseModel):
+    """Set or clear one provider's defaults for a character."""
+
     voice: str | None = None
-    voice_label: str | None = None
+    params: dict[str, Any] | None = None
 
 
 class SetCharacterVoiceRequest(BaseModel):
@@ -444,6 +524,7 @@ class AssetInfo(BaseModel):
     name: str
     path: str = Field(description="Path relative to the project root")
     duration_ms: int | None = None
+    hash: str | None = Field(default=None, description="Content hash for duplicate checks")
     created_at: datetime | None = None
 
 
@@ -464,6 +545,12 @@ class UpdateLineRequest(BaseModel):
 class UpdateSettingsRequest(BaseModel):
     recording_countdown_ms: int | None = Field(default=None, ge=0, le=10000)
     export: ExportSettings | None = None
+
+
+class AssetFromTakeRequest(BaseModel):
+    block: str
+    take: str
+    name: str | None = None
 
 
 class SelectionAssetRequest(BaseModel):

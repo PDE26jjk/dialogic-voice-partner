@@ -58,9 +58,15 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Convenience wrapper for JSON requests with a method and a body. */
-export function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+export function sendJson<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal
+): Promise<T> {
   return apiJson<T>(path, {
     method,
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal
   })
 }

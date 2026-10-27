@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..schemas import ExportSettings, ProjectSettings, Section, WorkspaceState
+from ..schemas import (
+    CharacterProviderSettings,
+    CharacterSettings,
+    ExportSettings,
+    ProjectSettings,
+    Section,
+    WorkspaceState,
+)
 from .atomic import read_json, write_json_atomic
 from .paths import (
     DEFAULT_SECTION_ID,
@@ -149,6 +156,32 @@ def update_settings(
     return settings
 
 
+def delete_section(root: Path, section_id: str) -> list[Section]:
+    """Remove a section and its workspace; its lines keep their documents."""
+    root = root.expanduser().resolve()
+    validate_section_id(section_id)
+    settings = load_project(root)
+    if len(settings.sections) <= 1:
+        raise ValueError("A project needs at least one section")
+
+    remaining = [section for section in settings.sections if section.id != section_id]
+    if len(remaining) == len(settings.sections):
+        raise ValueError(f"Unknown section: {section_id}")
+
+    settings.sections = remaining
+    for index, section in enumerate(settings.sections):
+        section.order = index
+    if settings.current_section == section_id:
+        settings.current_section = settings.sections[0].id
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+
+    workspace = workspace_path(root, section_id)
+    if workspace.is_file():
+        workspace.unlink()
+    return settings.sections
+
+
 def reorder_sections(root: Path, ids: list[str]) -> list[Section]:
     """Persist the section order the user arranged in the sidebar."""
     root = root.expanduser().resolve()
@@ -182,30 +215,69 @@ def save_project(root: Path, settings: ProjectSettings) -> ProjectSettings:
     return settings
 
 
-def set_character_voice(
+DEFAULT_CHARACTER_ID = "none"
+DEFAULT_CHARACTER_NAME = "无角色"
+
+
+def ensure_default_character(settings: ProjectSettings) -> bool:
+    """Make sure the fallback character exists; returns True when it changed."""
+    entry = settings.characters.get(DEFAULT_CHARACTER_ID)
+    if entry is not None:
+        if entry.name in ("", "(no character)"):
+            entry.name = DEFAULT_CHARACTER_NAME
+            return True
+        return False
+    settings.characters[DEFAULT_CHARACTER_ID] = CharacterSettings(
+        name=DEFAULT_CHARACTER_NAME
+    )
+    return True
+
+
+def character_config(settings: ProjectSettings, character: str | None) -> CharacterSettings:
+    """Return the character's defaults, falling back to the built-in one."""
+    if character and character in settings.characters:
+        return settings.characters[character]
+    return settings.characters.get(DEFAULT_CHARACTER_ID) or CharacterSettings(
+        name=DEFAULT_CHARACTER_NAME
+    )
+
+
+def update_character_provider(
     root: Path,
     character: str,
     provider: str,
-    voice: str,
+    voice: str | None,
+    params: dict | None,
 ) -> ProjectSettings:
-    """Remember which voice a character speaks with on one provider."""
+    """Set one provider's defaults for a character."""
     root = root.expanduser().resolve()
     settings = load_project(root)
+    ensure_default_character(settings)
 
-    # Drop stale mappings so a character always resolves to exactly one voice.
-    for existing in settings.providers.values():
-        if isinstance(existing, dict) and isinstance(existing.get("voices"), dict):
-            existing["voices"].pop(character, None)
+    entry = settings.characters.get(character)
+    if entry is None:
+        raise KeyError(f"Unknown character: {character}")
 
-    entry = settings.providers.setdefault(provider, {})
-    if not isinstance(entry, dict):
-        entry = {}
-        settings.providers[provider] = entry
-    voices = entry.setdefault("voices", {})
-    if not isinstance(voices, dict):
-        voices = {}
-        entry["voices"] = voices
-    voices[character] = voice
+    config = entry.providers.get(provider) or CharacterProviderSettings()
+    if voice is not None:
+        config.voice = voice or None
+    if params is not None:
+        config.params = dict(params)
+    entry.providers[provider] = config
+
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def clear_character_provider(root: Path, character: str, provider: str) -> ProjectSettings:
+    """Remove one provider's defaults so the provider defaults apply again."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    entry = settings.characters.get(character)
+    if entry is None:
+        raise KeyError(f"Unknown character: {character}")
+    entry.providers.pop(provider, None)
     settings.updated_at = _now()
     write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
     return settings
@@ -213,27 +285,90 @@ def set_character_voice(
 
 def get_character_voice(settings: ProjectSettings, character: str, provider: str) -> str | None:
     """Return the mapped voice, or None when the character is unmapped."""
-    entry = settings.providers.get(provider)
-    if not isinstance(entry, dict):
-        return None
-    voices = entry.get("voices")
-    if not isinstance(voices, dict):
-        return None
-    value = voices.get(character)
-    return value if isinstance(value, str) else None
+    config = character_config(settings, character)
+    entry = config.providers.get(provider)
+    return entry.voice if entry and entry.voice else None
 
 
-def find_character_voice(
-    settings: ProjectSettings, character: str
-) -> tuple[str | None, str | None]:
-    """Return the first (provider, voice) pair configured for a character."""
-    for provider, entry in settings.providers.items():
-        if not isinstance(entry, dict):
-            continue
-        voices = entry.get("voices")
-        if isinstance(voices, dict) and isinstance(voices.get(character), str):
-            return provider, voices[character]
-    return None, None
+def get_character_params(
+    settings: ProjectSettings, character: str, provider: str
+) -> dict:
+    """Provider parameters configured for a character (may be empty)."""
+    config = character_config(settings, character)
+    entry = config.providers.get(provider)
+    return dict(entry.params) if entry else {}
+
+
+def set_character_name(root: Path, character: str, name: str) -> ProjectSettings:
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    entry = settings.characters.get(character)
+    if entry is None:
+        raise KeyError(f"Unknown character: {character}")
+    entry.name = name
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def add_character(root: Path, character: str, name: str) -> ProjectSettings:
+    """Create a character seeded with the fallback character's providers."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    ensure_default_character(settings)
+    if character in settings.characters:
+        raise ValueError(f"Character already exists: {character}")
+
+    fallback = settings.characters[DEFAULT_CHARACTER_ID]
+    settings.characters[character] = CharacterSettings(
+        name=name or character,
+        providers={
+            provider: CharacterProviderSettings(
+                voice=config.voice, params=dict(config.params)
+            )
+            for provider, config in fallback.providers.items()
+        },
+    )
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def remove_character(root: Path, character: str) -> ProjectSettings:
+    """Drop a character; the fallback character cannot be removed."""
+    if character == DEFAULT_CHARACTER_ID:
+        raise ValueError("The default character cannot be removed")
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if character not in settings.characters:
+        raise KeyError(f"Unknown character: {character}")
+    del settings.characters[character]
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+    return settings
+
+
+def rename_character(root: Path, old: str, new: str) -> ProjectSettings:
+    """Rename a character id in settings and in the line documents."""
+    root = root.expanduser().resolve()
+    settings = load_project(root)
+    if old not in settings.characters:
+        raise KeyError(f"Unknown character: {old}")
+    if new in settings.characters and new != old:
+        raise ValueError(f"Character already exists: {new}")
+
+    entry = settings.characters.pop(old)
+    settings.characters[new] = entry
+    settings.updated_at = _now()
+    write_json_atomic(project_paths(root)["project"], settings.model_dump(mode="json"))
+
+    from .lines import list_lines, save_line
+
+    for line in list_lines(root):
+        if line.character == old:
+            line.character = new
+            save_line(root, line)
+    return settings
 
 
 def active_project() -> tuple[Path, ProjectSettings] | None:
